@@ -15,7 +15,7 @@ def create_config(path='files/setting.ini'):
 
     bot_token = input('Введите токен Telegram бота: ').strip()
     admin_id = input('Введите Telegram ID администратора: ').strip()
-    docker_container = input('Введите имя Docker-контейнера с WireGuard (например, amnezia-awg): ').strip()
+    docker_container = input('Введите имя Docker-контейнера с AmneziaWG (можно узнать с помощью команды docker ps, (например amnezia-awg)): ').strip()
 
     cmd = f"docker exec {docker_container} find / -name wg0.conf"
     try:

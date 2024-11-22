@@ -1,15 +1,15 @@
 [Unit]
-Description=AWG-docker-bot
+Description=AWG Bot Service
 After=network.target
 
 [Service]
 Type=simple
-#Укажите пользователя, под которым будет запускаться сервис
-User=your_user
-#Укажите рабочую директорию, в которой расположен бот
-WorkingDirectory=/home/your_user/awg-docker-bot
-#Укажите, где расположено виртуальное окружение, если такое имеется. И откуда запускать бота
-ExecStart=/bin/bash -c 'source /home/your_user/env/bin/activate && /home/your_user/env/bin/python3.11 bot_manager.py'
+#Например, бот лежит в /root/awg-docker-bot
+#WorkingDirectory=/root/awg-docker-bot
+WorkingDirectory=ваша/директория/где/bot
+#Или сразу путь до Python3.11
+#ExecStart=/usr/bin/python3.11 bot_manager.py
+ExecStart=/путь/до/виртуального_окружения/env/bin/python3.11 bot_manager.py
 Restart=always
 RestartSec=5
 

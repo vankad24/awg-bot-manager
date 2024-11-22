@@ -22,7 +22,7 @@
 ## Установка
 
 1. Установите [AmneziaVPN](https://github.com/amnezia-vpn/amnezia-client) (без данного шага бот РАБОТАТЬ НЕ БУДЕТ).
-2. Пройдите первоначальную [инициализацию](https://docs.amnezia.org/ru/documentation/instructions/install-vpn-on-server/) в клиенте [AmneziaVPN](https://github.com/amnezia-vpn/amnezia-client).
+2. Пройдите первоначальную [инициализацию](https://docs.amnezia.org/ru/documentation/instructions/install-vpn-on-server/), выбрав протокол AmneziaWG, в клиенте [AmneziaVPN](https://github.com/amnezia-vpn/amnezia-client).
 
 3. Клонируйте репозиторий:
 

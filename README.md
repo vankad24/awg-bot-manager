@@ -77,7 +77,8 @@
 
 1. Запустите бота:
 
-    ```bash                           
+    ```bash
+    cd awg                           
     python3.11 bot_manager.py              
     ```
     

@@ -40,7 +40,7 @@
   
    Установка Python 3.11 для Linux:
 
-    sudo apt-get install software-properties-common && sudo add-apt-repository ppa:deadsnakes/ppa && sudo apt update && sudo apt install python3.11 python3.11-dev python3.11-venv
+    sudo apt-get install software-properties-common -y && sudo add-apt-repository ppa:deadsnakes/ppa && sudo apt update && sudo apt install python3.11 python3.11-dev python3.11-venv -y
 
    Установка Python 3.11 для Windows производится с официального [сайта](https://www.python.org/downloads/release/python-31110/). 
    

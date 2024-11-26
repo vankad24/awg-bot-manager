@@ -27,12 +27,6 @@ ENDPOINT="$2"
 WG_CONFIG_FILE="$3"
 DOCKER_CONTAINER="$4"
 
-if [ "$5" == "ipv6" ]; then
-    IPV6="yes"
-else
-    IPV6="no"
-fi
-
 if [[ ! "$CLIENT_NAME" =~ ^[a-zA-Z0-9_-]+$ ]]; then
     echo "Error: Invalid CLIENT_NAME. Only letters, numbers, underscores, and hyphens are allowed."
     exit 1
@@ -43,9 +37,7 @@ mkdir -p "$pwd/users/$CLIENT_NAME"
 mkdir -p "$pwd/files"
 
 key=$(docker exec -i $DOCKER_CONTAINER wg genkey)
-psk=$(docker exec -i $DOCKER_CONTAINER wg genpsk
-
-)
+psk=$(docker exec -i $DOCKER_CONTAINER wg genpsk)
 
 SERVER_CONF_PATH="$pwd/files/server.conf"
 docker exec -i $DOCKER_CONTAINER cat $WG_CONFIG_FILE > "$SERVER_CONF_PATH"

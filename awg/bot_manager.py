@@ -8,27 +8,39 @@ import re
 import tempfile
 import json
 import subprocess
+import sys
+import pytz
+import zipfile
+import ipaddress
 from aiogram import Bot, types
 from aiogram.dispatcher import Dispatcher
 from aiogram.utils import executor
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from datetime import datetime, timedelta
-import pytz
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.date import DateTrigger
-import ipaddress
-import zipfile
 
-setting = db.get_config()
-bot = Bot(setting['bot_token'])
-admin = int(setting['admin_id'])
-WG_CONFIG_FILE = setting['wg_config_file']
-DOCKER_CONTAINER = setting['docker_container']
-ENDPOINT = setting['endpoint']
-
-dp = Dispatcher(bot)
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+setting = db.get_config()
+bot_token = setting.get('bot_token')
+admin_id = setting.get('admin_id')
+wg_config_file = setting.get('wg_config_file')
+docker_container = setting.get('docker_container')
+endpoint = setting.get('endpoint')
+
+if not all([bot_token, admin_id, wg_config_file, docker_container, endpoint]):
+    logger.error("Некоторые обязательные настройки отсутствуют в конфигурационном файле.")
+    sys.exit(1)
+
+bot = Bot(bot_token)
+admin = int(admin_id)
+WG_CONFIG_FILE = wg_config_file
+DOCKER_CONTAINER = docker_container
+ENDPOINT = endpoint
+
+dp = Dispatcher(bot)
 scheduler = AsyncIOScheduler(timezone=pytz.UTC)
 scheduler.start()
 
@@ -113,74 +125,6 @@ async def load_isp_cache_task():
     await load_isp_cache()
     scheduler.add_job(cleanup_isp_cache, 'interval', hours=1)
 
-def get_ipv6_subnet():
-    try:
-        cmd = f'docker exec -i {DOCKER_CONTAINER} cat {WG_CONFIG_FILE}'
-        process = subprocess.run(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        if process.returncode != 0:
-            return None
-        config_content = process.stdout.decode()
-        in_interface = False
-        for line in config_content.splitlines():
-            line = line.strip()
-            if line.startswith('[Interface]'):
-                in_interface = True
-                continue
-            if in_interface:
-                if line.startswith('Address'):
-                    addresses = line.split('=')[1].strip().split(',')
-                    for addr in addresses:
-                        addr = addr.strip()
-                        if ':' in addr:
-                            parts = addr.split('/')
-                            if len(parts) == 2:
-                                ip, mask = parts
-                                prefix = re.sub(r'::[0-9a-fA-F]+$', '::', ip)
-                                return f"{prefix}/64"
-                    return None
-                elif line.startswith('['):
-                    break
-    except:
-        return None
-
-async def restart_wireguard():
-    try:
-        interface_name = get_interface_name()
-        cmd = f'docker exec -i {DOCKER_CONTAINER} wg-quick strip {WG_CONFIG_FILE}'
-        process_strip = await asyncio.create_subprocess_shell(
-            cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
-        )
-        stdout_strip, stderr_strip = await process_strip.communicate()
-        if process_strip.returncode != 0:
-            logger.error(f"Strip WireGuard конфигурации не удался: {stderr_strip.decode()}")
-            return False
-        temp_config_path = f'/tmp/{interface_name}_temp.conf'
-        with open(temp_config_path, 'wb') as temp_config:
-            temp_config.write(stdout_strip)
-        cmd = f'docker cp {temp_config_path} {DOCKER_CONTAINER}:{temp_config_path}'
-        process = await asyncio.create_subprocess_shell(cmd)
-        await process.communicate()
-        cmd = f'docker exec -i {DOCKER_CONTAINER} wg syncconf {interface_name} {temp_config_path}'
-        process_syncconf = await asyncio.create_subprocess_shell(
-            cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
-        )
-        stdout_syncconf, stderr_syncconf = await process_syncconf.communicate()
-        if process_syncconf.returncode != 0:
-            os.remove(temp_config_path)
-            logger.error(f"Syncconf WireGuard не удался: {stderr_syncconf.decode()}")
-            return False
-        cmd = f'docker exec -i {DOCKER_CONTAINER} rm {temp_config_path}'
-        await asyncio.create_subprocess_shell(cmd)
-        os.remove(temp_config_path)
-        return True
-    except Exception as e:
-        logger.error(f"Ошибка при перезапуске WireGuard: {e}")
-        return False
-
 def create_zip(backup_filepath):
     with zipfile.ZipFile(backup_filepath, 'w') as zipf:
         for main_file in ['awg-decode.py', 'newclient.sh', 'removeclient.sh']:
@@ -229,47 +173,26 @@ async def handle_messages(message: types.Message):
             return
         user_main_messages['client_name'] = user_name
         user_main_messages['waiting_for_user_name'] = False
-        ipv6_subnet = get_ipv6_subnet()
-        if ipv6_subnet:
-            connect_buttons = [
-                InlineKeyboardButton("С IPv6", callback_data=f'connect_{user_name}_ipv6'),
-                InlineKeyboardButton("Без IPv6", callback_data=f'connect_{user_name}_noipv6'),
-                InlineKeyboardButton("Домой", callback_data="home")
-            ]
-            connect_markup = InlineKeyboardMarkup(row_width=1).add(*connect_buttons)
-            main_chat_id, main_message_id = user_main_messages.get(admin, (None, None))
-            if main_chat_id and main_message_id:
-                await bot.edit_message_text(
-                    chat_id=main_chat_id,
-                    message_id=main_message_id,
-                    text=f"Выберите тип подключения для пользователя **{user_name}**:",
-                    parse_mode="Markdown",
-                    reply_markup=connect_markup
-                )
-            else:
-                await message.answer("Ошибка: главное сообщение не найдено.")
+        duration_buttons = [
+            InlineKeyboardButton("1 час", callback_data=f"duration_1h_{user_name}_noipv6"),
+            InlineKeyboardButton("1 день", callback_data=f"duration_1d_{user_name}_noipv6"),
+            InlineKeyboardButton("1 неделя", callback_data=f"duration_1w_{user_name}_noipv6"),
+            InlineKeyboardButton("1 месяц", callback_data=f"duration_1m_{user_name}_noipv6"),
+            InlineKeyboardButton("Без ограничений", callback_data=f"duration_unlimited_{user_name}_noipv6"),
+            InlineKeyboardButton("Домой", callback_data="home")
+        ]
+        duration_markup = InlineKeyboardMarkup(row_width=1).add(*duration_buttons)
+        main_chat_id, main_message_id = user_main_messages.get(admin, (None, None))
+        if main_chat_id and main_message_id:
+            await bot.edit_message_text(
+                chat_id=main_chat_id,
+                message_id=main_message_id,
+                text=f"Выберите время действия конфигурации для пользователя **{user_name}**:",
+                parse_mode="Markdown",
+                reply_markup=duration_markup
+            )
         else:
-            user_main_messages['ipv6'] = 'noipv6'
-            duration_buttons = [
-                InlineKeyboardButton("1 час", callback_data=f"duration_1h_{user_name}_noipv6"),
-                InlineKeyboardButton("1 день", callback_data=f"duration_1d_{user_name}_noipv6"),
-                InlineKeyboardButton("1 неделя", callback_data=f"duration_1w_{user_name}_noipv6"),
-                InlineKeyboardButton("1 месяц", callback_data=f"duration_1m_{user_name}_noipv6"),
-                InlineKeyboardButton("Без ограничений", callback_data=f"duration_unlimited_{user_name}_noipv6"),
-                InlineKeyboardButton("Домой", callback_data="home")
-            ]
-            duration_markup = InlineKeyboardMarkup(row_width=1).add(*duration_buttons)
-            main_chat_id, main_message_id = user_main_messages.get(admin, (None, None))
-            if main_chat_id and main_message_id:
-                await bot.edit_message_text(
-                    chat_id=main_chat_id,
-                    message_id=main_message_id,
-                    text=f"Выберите время действия конфигурации для пользователя **{user_name}**:",
-                    parse_mode="Markdown",
-                    reply_markup=duration_markup
-                )
-            else:
-                await message.answer("Ошибка: главное сообщение не найдено.")
+            await message.answer("Ошибка: главное сообщение не найдено.")
     else:
         await message.reply("Неизвестная команда или действие.")
 
@@ -292,61 +215,6 @@ async def prompt_for_user_name(callback_query: types.CallbackQuery):
     else:
         await callback_query.answer("Ошибка: главное сообщение не найдено.", show_alert=True)
     await callback_query.answer()
-
-@dp.callback_query_handler(lambda c: c.data.startswith('connect_'))
-async def connect_user(callback: types.CallbackQuery):
-    if callback.from_user.id != admin:
-        await callback.answer("У вас нет прав для выполнения этого действия.", show_alert=True)
-        return
-    try:
-        _, client_name, ipv6_flag = callback.data.split('_', 2)
-    except ValueError:
-        await callback.answer("Неверный формат команды.", show_alert=True)
-        return
-    user_main_messages['client_name'] = client_name
-    user_main_messages['ipv6'] = ipv6_flag
-    duration_buttons = [
-        InlineKeyboardButton("1 час", callback_data=f"duration_1h_{client_name}_{ipv6_flag}"),
-        InlineKeyboardButton("1 день", callback_data=f"duration_1d_{client_name}_{ipv6_flag}"),
-        InlineKeyboardButton("1 неделя", callback_data=f"duration_1w_{client_name}_{ipv6_flag}"),
-        InlineKeyboardButton("1 месяц", callback_data=f"duration_1m_{client_name}_{ipv6_flag}"),
-        InlineKeyboardButton("Без ограничений", callback_data=f"duration_unlimited_{client_name}_{ipv6_flag}"),
-        InlineKeyboardButton("Домой", callback_data="home")
-    ]
-    duration_markup = InlineKeyboardMarkup(row_width=1).add(*duration_buttons)
-    main_chat_id, main_message_id = user_main_messages.get(admin, (None, None))
-    if main_chat_id and main_message_id:
-        await bot.edit_message_text(
-            chat_id=main_chat_id,
-            message_id=main_message_id,
-            text="Выберите время действия конфигурации:",
-            parse_mode="Markdown",
-            reply_markup=duration_markup
-        )
-    else:
-        await callback.answer("Ошибка: главное сообщение не найдено.", show_alert=True)
-    await callback.answer()
-
-def parse_relative_time(time_str):
-    now = datetime.now(pytz.UTC)
-    delta = timedelta()
-    parts = time_str.strip().split(',')
-    for part in parts:
-        part = part.strip()
-        match = re.match(r'(\d+)\s+(day|hour|minute|second)s?', part)
-        if match:
-            value = int(match.group(1))
-            unit = match.group(2)
-            if unit == 'day':
-                delta += timedelta(days=value)
-            elif unit == 'hour':
-                delta += timedelta(hours=value)
-            elif unit == 'minute':
-                delta += timedelta(minutes=value)
-            elif unit == 'second':
-                delta += timedelta(seconds=value)
-    last_handshake_time = now - delta
-    return last_handshake_time
 
 @dp.callback_query_handler(lambda c: c.data.startswith('duration_'))
 async def set_config_duration(callback: types.CallbackQuery):
@@ -375,10 +243,7 @@ async def set_config_duration(callback: types.CallbackQuery):
         await bot.send_message(admin, "Неверный выбор времени.", reply_markup=main_menu_markup, disable_notification=True)
         asyncio.create_task(delete_message_after_delay(admin, main_message_id, delay=2))
         return
-    if ipv6_flag == 'ipv6':
-        success = db.root_add(client_name, ipv6=True)
-    else:
-        success = db.root_add(client_name, ipv6=False)
+    success = db.root_add(client_name, ipv6=False)
     if success:
         try:
             conf_path = os.path.join('users', client_name, f'{client_name}.conf')
@@ -488,7 +353,7 @@ async def generate_vpn_key(conf_path: str) -> str:
         logger.error(f"Ошибка при вызове awg-decode.py: {e}")
         return ""
 
-@dp.callback_query_handler(lambda c: c.data == 'list_users')
+@dp.callback_query_handler(lambda c: c.data == "list_users")
 async def list_users_callback(callback_query: types.CallbackQuery):
     if callback_query.from_user.id != admin:
         await callback_query.answer("У вас нет прав для выполнения этого действия.", show_alert=True)
@@ -618,7 +483,7 @@ async def client_selected_callback(callback_query: types.CallbackQuery):
                 reply_markup=keyboard
             )
         except Exception as e:
-            print(f"Ошибка при редактировании сообщения: {e}")
+            logger.error(f"Ошибка при редактировании сообщения: {e}")
             await callback_query.answer("Ошибка при обновлении сообщения.", show_alert=True)
     else:
         await callback_query.answer("Ошибка: главное сообщение не найдено.", show_alert=True)
@@ -769,7 +634,6 @@ async def return_home(callback_query: types.CallbackQuery):
     if main_chat_id and main_message_id:
         user_main_messages.pop('waiting_for_user_name', None)
         user_main_messages.pop('client_name', None)
-        user_main_messages.pop('ipv6', None)
         try:
             await bot.edit_message_text(
                 chat_id=main_chat_id,
@@ -833,13 +697,21 @@ async def send_user_config(callback_query: types.CallbackQuery):
     username = username.strip()
     sent_messages = []
     try:
-        png_path = os.path.join('users', username, f'{username}.png')
+        user_dir = os.path.join('users', username)
+        conf_path = os.path.join(user_dir, f'{username}.conf')
+        png_path = os.path.join(user_dir, f'{username}.png')
+
+        if not os.path.exists(conf_path):
+            success = db.root_add(username, ipv6=False)
+            if not success:
+                await callback_query.answer("Не удалось создать конфигурацию пользователя.", show_alert=True)
+                return
+
         if os.path.exists(png_path):
             with open(png_path, 'rb') as photo:
                 sent_photo = await bot.send_photo(admin, photo, disable_notification=True)
                 sent_messages.append(sent_photo.message_id)
 
-        conf_path = os.path.join('users', username, f'{username}.conf')
         if os.path.exists(conf_path):
             vpn_key = await generate_vpn_key(conf_path)
             if vpn_key:
@@ -862,9 +734,15 @@ async def send_user_config(callback_query: types.CallbackQuery):
                     disable_notification=True
                 )
                 sent_messages.append(sent_doc.message_id)
-        
+        else:
+            confirmation_text = f"Не удалось создать конфигурацию для пользователя **{username}**."
+            sent_message = await bot.send_message(admin, confirmation_text, parse_mode="Markdown", disable_notification=True)
+            asyncio.create_task(delete_message_after_delay(admin, sent_message.message_id, delay=15))
+            await callback_query.answer()
+            return
+
     except Exception as e:
-        confirmation_text = f"Произошла ошибка."
+        confirmation_text = f"Произошла ошибка: {e}"
         sent_message = await bot.send_message(admin, confirmation_text, parse_mode="Markdown", disable_notification=True)
         asyncio.create_task(delete_message_after_delay(admin, sent_message.message_id, delay=15))
         await callback_query.answer()
@@ -885,7 +763,7 @@ async def send_user_config(callback_query: types.CallbackQuery):
             disable_notification=True
         )
         asyncio.create_task(delete_message_after_delay(admin, sent_confirmation.message_id, delay=15))
-    
+
     for message_id in sent_messages:
         asyncio.create_task(delete_message_after_delay(admin, message_id, delay=15))
     await callback_query.answer()
@@ -904,6 +782,7 @@ async def create_backup_callback(callback_query: types.CallbackQuery):
         if os.path.exists(backup_filepath):
             with open(backup_filepath, 'rb') as f:
                 await bot.send_document(admin, f, caption=backup_filename, disable_notification=True)
+            os.remove(backup_filepath)
         else:
             logger.error(f"Бекап файл не создан: {backup_filepath}")
             await bot.send_message(admin, "Не удалось создать бекап.", disable_notification=True)
@@ -911,6 +790,28 @@ async def create_backup_callback(callback_query: types.CallbackQuery):
         logger.error(f"Ошибка при создании бекапа: {e}")
         await bot.send_message(admin, "Не удалось создать бекап.", disable_notification=True)
     await callback_query.answer()
+
+
+def parse_relative_time(time_str):
+    now = datetime.now(pytz.UTC)
+    delta = timedelta()
+    parts = time_str.strip().split(',')
+    for part in parts:
+        part = part.strip()
+        match = re.match(r'(\d+)\s+(day|hour|minute|second)s?', part)
+        if match:
+            value = int(match.group(1))
+            unit = match.group(2)
+            if unit == 'day':
+                delta += timedelta(days=value)
+            elif unit == 'hour':
+                delta += timedelta(hours=value)
+            elif unit == 'minute':
+                delta += timedelta(minutes=value)
+            elif unit == 'second':
+                delta += timedelta(seconds=value)
+    last_handshake_time = now - delta
+    return last_handshake_time
 
 @dp.callback_query_handler(lambda c: True)
 async def process_unknown_callback(callback_query: types.CallbackQuery):
@@ -935,10 +836,38 @@ async def deactivate_user(client_name: str):
         sent_message = await bot.send_message(admin, f"Не удалось деактивировать пользователя **{client_name}** по истечении времени.", parse_mode="Markdown", disable_notification=True)
         asyncio.create_task(delete_message_after_delay(admin, sent_message.message_id, delay=15))
 
+async def check_environment():
+    try:
+        cmd = "docker ps --filter 'name={}' --format '{{{{.Names}}}}'".format(DOCKER_CONTAINER)
+        container_names = subprocess.check_output(cmd, shell=True).decode().strip().split('\n')
+        if DOCKER_CONTAINER not in container_names:
+            logger.error(f"Контейнер Docker '{DOCKER_CONTAINER}' не найден. Необходима инициализация AmneziaVPN.")
+            return False
+    except subprocess.CalledProcessError as e:
+        logger.error(f"Ошибка при проверке Docker-контейнера: {e}")
+        return False
+
+    try:
+        cmd = f"docker exec {DOCKER_CONTAINER} test -f {WG_CONFIG_FILE}"
+        subprocess.check_call(cmd, shell=True)
+    except subprocess.CalledProcessError:
+        logger.error(f"Конфигурационный файл WireGuard '{WG_CONFIG_FILE}' не найден в контейнере '{DOCKER_CONTAINER}'. Необходима инициализация AmneziaVPN.")
+        return False
+
+    return True
+
 async def on_startup(dp):
     os.makedirs('files/connections', exist_ok=True)
     os.makedirs('users', exist_ok=True)
     await load_isp_cache_task()
+
+    environment_ok = await check_environment()
+    if not environment_ok:
+        logger.error("Необходимо инициализировать AmneziaVPN перед запуском бота.")
+        await bot.send_message(admin, "Необходимо инициализировать AmneziaVPN перед запуском бота.")
+        await bot.close()
+        sys.exit(1)
+
     users = db.get_users_with_expiration()
     for user in users:
         client_name, expiration_time = user

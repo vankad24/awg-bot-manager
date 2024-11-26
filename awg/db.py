@@ -4,6 +4,7 @@ import configparser
 import json
 from datetime import datetime
 import pytz
+import socket
 
 EXPIRATIONS_FILE = 'files/expirations.json'
 UTC = pytz.UTC
@@ -25,19 +26,9 @@ def create_config(path='files/setting.ini'):
         wg_config_file = '/opt/amnezia/awg/wg0.conf'
 
     try:
-        ip_output = subprocess.check_output("ip -4 addr show scope global", shell=True).decode()
-        ip_address = None
-        for line in ip_output.split('\n'):
-            if 'inet' in line:
-                parts = line.strip().split()
-                ip = parts[1].split('/')[0]
-                ip_address = ip
-                break
-        if ip_address:
-            endpoint = ip_address
-        else:
-            endpoint = input('Не удалось автоматически определить внешний IP-адрес. Пожалуйста, введите его вручную: ').strip()
-    except subprocess.CalledProcessError:
+        endpoint = subprocess.check_output("curl -s https://api.ipify.org", shell=True).decode().strip()
+        socket.inet_aton(endpoint)
+    except (subprocess.CalledProcessError, socket.error):
         print("Ошибка при определении внешнего IP-адреса сервера.")
         endpoint = input('Не удалось автоматически определить внешний IP-адрес. Пожалуйста, введите его вручную: ').strip()
 
@@ -88,19 +79,42 @@ def root_add(id_user, ipv6=False):
     wg_config_file = setting['wg_config_file']
     docker_container = setting['docker_container']
 
-    if ipv6:
-        cmd = ["./newclient.sh", id_user, endpoint, wg_config_file, docker_container, 'ipv6']
-    else:
-        cmd = ["./newclient.sh", id_user, endpoint, wg_config_file, docker_container]
+    cmd = ["./newclient.sh", id_user, endpoint, wg_config_file, docker_container]
 
     if subprocess.call(cmd) == 0:
         return True
     return False
 
+def get_clients_from_clients_table():
+    setting = get_config()
+    docker_container = setting['docker_container']
+    clients_table_path = '/opt/amnezia/awg/clientsTable'
+    try:
+        cmd = f"docker exec -i {docker_container} cat {clients_table_path}"
+        call = subprocess.check_output(cmd, shell=True)
+        clients_table = json.loads(call.decode('utf-8'))
+        client_map = {client['clientId']: client['userData']['clientName'] for client in clients_table}
+        return client_map
+    except subprocess.CalledProcessError as e:
+        print(f"Ошибка при получении clientsTable: {e}")
+        return {}
+    except json.JSONDecodeError:
+        print("Ошибка при разборе clientsTable JSON.")
+        return {}
+
+def parse_client_name(full_name):
+    """
+    Извлекает основную часть имени клиента, удаляя дополнительные сведения в квадратных скобках.
+    Например, из "Admin [Android (14.0)]" вернет "Admin".
+    """
+    return full_name.split('[')[0].strip()
+
 def get_client_list():
     setting = get_config()
     wg_config_file = setting['wg_config_file']
     docker_container = setting['docker_container']
+
+    client_map = get_clients_from_clients_table()
 
     try:
         cmd = f"docker exec -i {docker_container} cat {wg_config_file}"
@@ -113,22 +127,24 @@ def get_client_list():
         while i < len(lines):
             line = lines[i].strip()
             if line.startswith('[Peer]'):
-                client_name = 'Unknown'
-                public_key = ''
+                client_public_key = ''
                 allowed_ips = ''
+                client_name = 'Unknown'
                 i += 1
                 while i < len(lines):
                     peer_line = lines[i].strip()
                     if peer_line == '':
                         break
                     if peer_line.startswith('#'):
-                        client_name = peer_line[1:].strip()
+                        full_client_name = peer_line[1:].strip()
+                        client_name = parse_client_name(full_client_name)
                     elif peer_line.startswith('PublicKey ='):
-                        public_key = peer_line.split('=', 1)[1].strip()
+                        client_public_key = peer_line.split('=', 1)[1].strip()
                     elif peer_line.startswith('AllowedIPs ='):
                         allowed_ips = peer_line.split('=', 1)[1].strip()
                     i += 1
-                clients.append([client_name, public_key, allowed_ips])
+                client_name = client_map.get(client_public_key, client_name if 'client_name' in locals() else 'Unknown')
+                clients.append([client_name, client_public_key, allowed_ips])
             else:
                 i += 1
         return clients
@@ -140,42 +156,44 @@ def get_active_list():
     setting = get_config()
     docker_container = setting['docker_container']
 
+    client_map = get_clients_from_clients_table()
+
     try:
         clients = get_client_list()
-        client_key = {client[1]: client[0] for client in clients}
+        client_key_map = {client[1]: client[0] for client in clients}
 
         cmd = f"docker exec -i {docker_container} wg"
         call = subprocess.check_output(cmd, shell=True)
         wg_output = call.decode('utf-8')
 
         active_clients = []
-        current_peer = None
+        current_peer = {}
         for line in wg_output.splitlines():
             line = line.strip()
             if line.startswith('peer:'):
                 peer_public_key = line.split('peer: ')[1].strip()
                 current_peer = {'public_key': peer_public_key}
-            elif line.startswith('endpoint:') and current_peer is not None:
+            elif line.startswith('endpoint:') and 'public_key' in current_peer:
                 current_peer['endpoint'] = line.split('endpoint: ')[1].strip()
-            elif line.startswith('latest handshake:') and current_peer is not None:
+            elif line.startswith('latest handshake:') and 'public_key' in current_peer:
                 current_peer['latest_handshake'] = line.split('latest handshake: ')[1].strip()
-            elif line.startswith('transfer:') and current_peer is not None:
+            elif line.startswith('transfer:') and 'public_key' in current_peer:
                 current_peer['transfer'] = line.split('transfer: ')[1].strip()
-            elif line == '' and current_peer is not None:
+            elif line == '' and 'public_key' in current_peer:
                 peer_public_key = current_peer.get('public_key')
-                if peer_public_key in client_key:
-                    username = client_key[peer_public_key]
+                if peer_public_key in client_key_map:
+                    username = client_key_map[peer_public_key]
                     last_time = current_peer.get('latest_handshake', 'Нет данных')
                     transfer = current_peer.get('transfer', 'Нет данных')
                     endpoint = current_peer.get('endpoint', 'Нет данных')
                     save_client_endpoint(username, endpoint)
                     active_clients.append([username, last_time, transfer, endpoint])
-                current_peer = None
+                current_peer = {}
 
-        if current_peer is not None:
+        if 'public_key' in current_peer:
             peer_public_key = current_peer.get('public_key')
-            if peer_public_key in client_key:
-                username = client_key[peer_public_key]
+            if peer_public_key in client_key_map:
+                username = client_key_map[peer_public_key]
                 last_time = current_peer.get('latest_handshake', 'Нет данных')
                 transfer = current_peer.get('transfer', 'Нет данных')
                 endpoint = current_peer.get('endpoint', 'Нет данных')

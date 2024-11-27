@@ -24,46 +24,7 @@
 1. Установите [AmneziaVPN](https://github.com/amnezia-vpn/amnezia-client) (без данного шага бот РАБОТАТЬ НЕ БУДЕТ).
 2. Пройдите первоначальную [инициализацию](https://docs.amnezia.org/ru/documentation/instructions/install-vpn-on-server/), выбрав протокол AmneziaWG, в клиенте [AmneziaVPN](https://github.com/amnezia-vpn/amnezia-client).
 
-3. Клонируйте репозиторий:
-
-    ```bash
-    git clone https://github.com/JB-SelfCompany/awg-docker-bot.git
-    ```
-
-    Перейдите в репозиторий:
-
-    ```bash
-    cd awg-docker-bot
-    ```
-
-  #### Опционально (рекомендуется устанавливать библиотеки в виртуальное окружение)
-  
-   Установка Python 3.11 для Linux:
-
-    sudo apt-get install software-properties-common -y && sudo add-apt-repository ppa:deadsnakes/ppa && sudo apt update && sudo apt install python3.11 python3.11-dev python3.11-venv -y
-
-   Установка Python 3.11 для Windows производится с официального [сайта](https://www.python.org/downloads/release/python-31110/). 
-   
-   Создайте и активируйте виртуальное окружение для Python:
-
-    python3.11 -m venv myenv
-        
-   Активация виртуального окружения для Linux:
-    
-    source myenv/bin/activate
-
-   Для Windows:
-  
-    python -m myenv\Scripts\activate
-
-4. Установите зависимости:
-
-    ```bash
-    pip install -r requirements.txt
-    sudo apt update && sudo apt install jq qrencode -y
-    ```
-
-5. Создайте бота в Telegram:
+3. Создайте бота в Telegram:
 
 - Откройте Telegram и найдите бота [BotFather](https://t.me/BotFather).
 - Начните диалог, отправив команду `/start`.
@@ -73,43 +34,19 @@
     - Придумать уникальное имя пользователя для бота (например, `WireGuardManagerBot_bot`). Оно должно оканчиваться на `_bot`.
 - После создания бота BotFather отправит вам токен для доступа к API. Его запросит бот во время первоначальной инициализации.
 
-## Запуск
-
-1. Запустите бота:
+4. Загрузите и запустите скрипт `install.sh`, с помощью которого будет автоматически установлен бот, со всеми зависимостями, в том числе, в качестве системной службы (автозапуск):
 
     ```bash
-    cd awg                           
-    python3.11 bot_manager.py              
+    curl -O https://raw.githubusercontent.com/JB-SelfCompany/awg-docker-bot/main/install.sh && chmod +x install.sh && ./install.sh
     ```
-    
-2. Добавьте бота в Telegram и отправьте команду `/start` или `/help` для начала работы.
+
+## Запуск
+
+1. Добавьте бота в Telegram и отправьте команду `/start` или `/help` для начала работы.
 
 ## Заметки
 
 При создании резервной копии, в архив добавляется директория connections (создается и содержит в себе логи подключений клиентов), conf, png, и сам конфигурационный файл. 
-
-При первом запуске бота, по умолчанию будет существовать клиент с названием Unknown. Это пользователь, созданный самим [AmneziaVPN](https://github.com/amnezia-vpn/amnezia-client) в процессе [инициализации](https://docs.amnezia.org/ru/documentation/instructions/install-vpn-on-server/). По желанию, можете удалить его. 
-
-Так же, вы можете запускать бота как службу на вашем сервере. Для этого:
-1. Скопируйте файл `awg-docker-bot.service` в директорию `/etc/systemd/system/`:
-
-    ```bash
-    sudo cp awg-docker-bot.service /etc/systemd/system/
-    ```
-
-2. Отредактируйте параметры внутри файла с помощью `nano` (или любого удобного текстового редактора):
-
-    ```bash
-    sudo nano /etc/systemd/system/awg-docker-bot.service
-    ```
-    
-3. Перезагрузите системный демон и запустите службу:
-
-    ```bash
-    sudo systemctl daemon-reload
-    sudo systemctl start awg-docker-bot.service
-    sudo systemctl enable awg-docker-bot.service
-    ```
 
 ## Поддержка
 

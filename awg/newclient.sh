@@ -78,7 +78,7 @@ docker exec -i $DOCKER_CONTAINER sh -c "wg-quick down $WG_CONFIG_FILE && wg-quic
 cat << EOF > "$pwd/users/$CLIENT_NAME/$CLIENT_NAME.conf"
 [Interface]
 Address = $CLIENT_IP
-DNS = 8.8.8.8
+DNS = 1.1.1.1, 1.0.0.1
 PrivateKey = $key
 $ADDITIONAL_PARAMS
 [Peer]
@@ -88,8 +88,6 @@ AllowedIPs = 0.0.0.0/0
 Endpoint = $ENDPOINT:$LISTEN_PORT
 PersistentKeepalive = 25
 EOF
-
-qrencode -l L < "$pwd/users/$CLIENT_NAME/$CLIENT_NAME.conf" -o "$pwd/users/$CLIENT_NAME/$CLIENT_NAME.png"
 
 CLIENTS_TABLE_PATH="$pwd/files/clientsTable"
 docker exec -i $DOCKER_CONTAINER cat /opt/amnezia/awg/clientsTable > "$CLIENTS_TABLE_PATH" || echo "[]" > "$CLIENTS_TABLE_PATH"
@@ -111,5 +109,13 @@ else
 fi
 
 docker cp "$CLIENTS_TABLE_PATH" $DOCKER_CONTAINER:/opt/amnezia/awg/clientsTable
+
+traffic_file="$pwd/users/$CLIENT_NAME/traffic.json"
+echo '{
+    "total_incoming": 0,
+    "total_outgoing": 0,
+    "last_incoming": 0,
+    "last_outgoing": 0
+}' > "$traffic_file"
 
 echo "Client $CLIENT_NAME successfully added to WireGuard"

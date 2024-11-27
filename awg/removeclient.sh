@@ -74,7 +74,7 @@ docker cp "$SERVER_CONF_PATH" "$DOCKER_CONTAINER":"$WG_CONFIG_FILE"
 
 docker exec -i "$DOCKER_CONTAINER" sh -c "wg-quick down '$WG_CONFIG_FILE' && wg-quick up '$WG_CONFIG_FILE'"
 
-rm -f "users/$CLIENT_NAME/$CLIENT_NAME.conf" "users/$CLIENT_NAME/$CLIENT_NAME.png"
+rm -f "users/$CLIENT_NAME/$CLIENT_NAME.conf"
 rmdir "users/$CLIENT_NAME" 2>/dev/null || true
 
 CLIENTS_TABLE_PATH="$pwd/files/clientsTable"
@@ -85,5 +85,8 @@ if [ -f "$CLIENTS_TABLE_PATH" ]; then
     mv "$CLIENTS_TABLE_PATH.tmp" "$CLIENTS_TABLE_PATH"
     docker cp "$CLIENTS_TABLE_PATH" "$DOCKER_CONTAINER":/opt/amnezia/awg/clientsTable
 fi
+
+traffic_file="$pwd/users/$CLIENT_NAME/traffic.json"
+rm -f "$traffic_file"
 
 echo "Client $CLIENT_NAME успешно удален из WireGuard"

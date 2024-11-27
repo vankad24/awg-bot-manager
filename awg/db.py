@@ -248,11 +248,11 @@ def load_expirations():
     with open(EXPIRATIONS_FILE, 'r') as f:
         try:
             data = json.load(f)
-            for user, timestamp in data.items():
-                if timestamp:
-                    data[user] = datetime.fromisoformat(timestamp).replace(tzinfo=UTC)
+            for user, info in data.items():
+                if info.get('expiration_time'):
+                    data[user]['expiration_time'] = datetime.fromisoformat(info['expiration_time']).replace(tzinfo=UTC)
                 else:
-                    data[user] = None
+                    data[user]['expiration_time'] = None
             return data
         except json.JSONDecodeError:
             logger.error("Ошибка при загрузке expirations.json.")
@@ -260,18 +260,26 @@ def load_expirations():
 
 def save_expirations(expirations):
     os.makedirs(os.path.dirname(EXPIRATIONS_FILE), exist_ok=True)
-    data = {user: (ts.isoformat() if ts else None) for user, ts in expirations.items()}
+    data = {}
+    for user, info in expirations.items():
+        data[user] = {
+            'expiration_time': info['expiration_time'].isoformat() if info['expiration_time'] else None,
+            'traffic_limit': info.get('traffic_limit', "Неограниченно")
+        }
     with open(EXPIRATIONS_FILE, 'w') as f:
         json.dump(data, f)
 
-def set_user_expiration(username: str, expiration: datetime):
+def set_user_expiration(username: str, expiration: datetime, traffic_limit: str):
     expirations = load_expirations()
+    if username not in expirations:
+        expirations[username] = {}
     if expiration:
         if expiration.tzinfo is None:
             expiration = expiration.replace(tzinfo=UTC)
-        expirations[username] = expiration
+        expirations[username]['expiration_time'] = expiration
     else:
-        expirations[username] = None
+        expirations[username]['expiration_time'] = None
+    expirations[username]['traffic_limit'] = traffic_limit
     save_expirations(expirations)
 
 def remove_user_expiration(username: str):
@@ -282,8 +290,12 @@ def remove_user_expiration(username: str):
 
 def get_users_with_expiration():
     expirations = load_expirations()
-    return [(user, ts.isoformat() if ts else None) for user, ts in expirations.items()]
+    return [(user, info['expiration_time'].isoformat() if info['expiration_time'] else None, info.get('traffic_limit', "Неограниченно")) for user, info in expirations.items()]
 
 def get_user_expiration(username: str):
     expirations = load_expirations()
-    return expirations.get(username, None)
+    return expirations.get(username, {}).get('expiration_time', None)
+
+def get_user_traffic_limit(username: str):
+    expirations = load_expirations()
+    return expirations.get(username, {}).get('traffic_limit', "Неограниченно")

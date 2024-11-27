@@ -326,7 +326,7 @@ async def set_traffic_limit(callback_query: types.CallbackQuery):
             args=[client_name],
             id=client_name
         )
-        confirmation_text = f"Пользователь **{client_name}** добавлен. Конфигурация истечет через **{duration_choice}**."
+        confirmation_text = f"Пользователь **{client_name}** добавлен. \nКонфигурация истечет через **{duration_choice}**."
     else:
         db.set_user_expiration(client_name, None, traffic_limit)
         confirmation_text = f"Пользователь **{client_name}** добавлен с неограниченным временем действия."
@@ -338,15 +338,12 @@ async def set_traffic_limit(callback_query: types.CallbackQuery):
     if success:
         try:
             conf_path = os.path.join('users', client_name, f'{client_name}.conf')
-            # Удаляем отправку QR-кода (.png файла)
             vpn_key = ""
             if os.path.exists(conf_path):
                 vpn_key = await generate_vpn_key(conf_path)
             if vpn_key:
                 instruction_text = (
-                    "\nAmneziaWG [Google play](https://play.google.com/store/apps/details?id=org.amnezia.awg&hl=ru), "
-                    "[GitHub](https://github.com/amnezia-vpn/amneziawg-android)\n"
-                    "AmneziaVPN [Google play](https://play.google.com/store/apps/details?id=org.amnezia.vpn&hl=ru), "
+                    "\nAmneziaVPN [Google play](https://play.google.com/store/apps/details?id=org.amnezia.vpn&hl=ru), "
                     "[GitHub](https://github.com/amnezia-vpn/amnezia-client)\n"
                 )
                 caption = f"\n{instruction_text}\n```{vpn_key}```"
@@ -483,6 +480,7 @@ async def client_selected_callback(callback_query: types.CallbackQuery):
     else:
         traffic_limit_display = traffic_limit
     text = (
+	f"📧 *Имя:* {username}\n"
         f"🌐 *IPv4:* {ipv4_address}\n"
         f"🌐 *Статус соединения:* {status}\n"
         f"{date_end}\n"
@@ -796,9 +794,7 @@ async def send_user_config(callback_query: types.CallbackQuery):
             vpn_key = await generate_vpn_key(conf_path)
             if vpn_key:
                 instruction_text = (
-                    "\nAmneziaWG [Google play](https://play.google.com/store/apps/details?id=org.amnezia.awg&hl=ru), "
-                    "[GitHub](https://github.com/amnezia-vpn/amneziawg-android)\n"
-                    "AmneziaVPN [Google play](https://play.google.com/store/apps/details?id=org.amnezia.vpn&hl=ru), "
+                    "\nAmneziaVPN [Google play](https://play.google.com/store/apps/details?id=org.amnezia.vpn&hl=ru), "
                     "[GitHub](https://github.com/amnezia-vpn/amnezia-client)\n"
                 )
                 caption = f"\n{instruction_text}\n```{vpn_key}```"

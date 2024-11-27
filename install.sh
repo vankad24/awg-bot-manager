@@ -8,6 +8,11 @@ RED=$'\033[0;31m'
 BLUE=$'\033[0;34m'
 NC=$'\033[0m'
 
+# Определение абсолютного пути к скрипту
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+SCRIPT_NAME="$(basename "$0")"
+SCRIPT_PATH="$SCRIPT_DIR/$SCRIPT_NAME"
+
 run_with_spinner() {
     local description="$1"
     shift
@@ -77,7 +82,7 @@ install_and_configure_needrestart() {
     run_with_spinner "Установка needrestart" "sudo apt-get install needrestart -y -qq"
 
     sudo sed -i 's/^#\?\(nrconf{restart} = "\).*$/\1a";/' /etc/needrestart/needrestart.conf
-    grep -q 'nrconf{restart} = "a";' /etc/needrestart/needrestart.conf || echo 'nrconf{restart} = "a";' | sudo tee -a /etc/needrestart/needrestart.conf >/dev/null 2>&1
+    grep -q 'nrconf{restart} = "a";' /etc/needrestart/needrestart.conf || echo 'nrconf{restart} = "a";' | sudo tee /etc/needrestart/needrestart.conf >/dev/null 2>&1
 }
 
 clone_repository() {
@@ -227,17 +232,19 @@ install_bot() {
 }
 
 main() {
-    echo -e "=== Установка AmneziaVPN Docker Telegram Bot ==="
+    echo -e "=== AWG Docker Telegram Bot ==="
     echo -e "Начало установки..."
 
     if systemctl list-units --type=service --all | grep -q "$SERVICE_NAME.service"; then
-        echo -e "\n${YELLOW}Бот уже установлен в системе.${NC}"
+        echo -e "\n${YELLOW}Бот установлен в системе.${NC}"
         service_menu
     else
-        echo -e "\n${GREEN}Бот не установлен.${NC}"
+        echo -e "\n${RED}Бот не установлен.${NC}"
         install_bot
-        echo -e "\n${GREEN}Установка завершена. Перейдём к управлению службой.${NC}"
-        service_menu
+        echo -e "\n${GREEN}Установка завершена.${NC}"
+
+        ( sleep 1; rm -- "$SCRIPT_PATH" ) &
+        exit 0
     fi
 }
 

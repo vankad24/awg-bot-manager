@@ -12,6 +12,7 @@ import sys
 import pytz
 import zipfile
 import ipaddress
+import humanize
 from aiogram import Bot, types
 from aiogram.dispatcher import Dispatcher
 from aiogram.utils import executor
@@ -402,6 +403,57 @@ async def list_users_callback(callback_query: types.CallbackQuery):
             pass
     await callback_query.answer()
 
+def format_transfer(transfer_str):
+    try:
+        if '/' in transfer_str:
+            incoming, outgoing = transfer_str.split('/')
+            incoming = incoming.strip()
+            outgoing = outgoing.strip()
+
+            incoming_match = re.match(r'([\d.]+)\s*(\w+)', incoming)
+            outgoing_match = re.match(r'([\d.]+)\s*(\w+)', outgoing)
+
+            if incoming_match:
+                incoming_value, incoming_unit = incoming_match.groups()
+                incoming = humanize.naturalsize(float(incoming_value), binary=False)
+            else:
+                incoming = "—"
+
+            if outgoing_match:
+                outgoing_value, outgoing_unit = outgoing_match.groups()
+                outgoing = humanize.naturalsize(float(outgoing_value), binary=False)
+            else:
+                outgoing = "—"
+
+            return incoming, outgoing
+        else:
+            parts = re.split(r'[/,]', transfer_str)
+            if len(parts) >= 2:
+                incoming = parts[0].strip()
+                outgoing = parts[1].strip()
+
+                incoming_match = re.match(r'([\d.]+)\s*(\w+)', incoming)
+                outgoing_match = re.match(r'([\d.]+)\s*(\w+)', outgoing)
+
+                if incoming_match:
+                    incoming_value, incoming_unit = incoming_match.groups()
+                    incoming = humanize.naturalsize(float(incoming_value), binary=False)
+                else:
+                    incoming = "—"
+
+                if outgoing_match:
+                    outgoing_value, outgoing_unit = outgoing_match.groups()
+                    outgoing = humanize.naturalsize(float(outgoing_value), binary=False)
+                else:
+                    outgoing = "—"
+
+                return incoming, outgoing
+            else:
+                return "—", "—"
+    except Exception as e:
+        logger.error(f"Ошибка при форматировании трафика: {e}")
+        return "—", "—"
+
 @dp.callback_query_handler(lambda c: c.data.startswith('client_'))
 async def client_selected_callback(callback_query: types.CallbackQuery):
     _, username = callback_query.data.split('client_', 1)
@@ -413,51 +465,56 @@ async def client_selected_callback(callback_query: types.CallbackQuery):
         return
 
     expiration_time = db.get_user_expiration(username)
-    text = f"*Информация о пользователе {username}:*\n"
-    allowed_ips = client_info[2]
-    if allowed_ips:
-        ip_addresses = allowed_ips.split(',')
-        for ip in ip_addresses:
-            ip = ip.strip()
-            if not ip:
-                continue
-            if '/' in ip:
-                ip_adr, mask = ip.split('/', 1)
-                ip_with_mask = f"{ip_adr}/{mask}"
-            else:
-                ip_adr = ip
-                mask = ''
-                ip_with_mask = ip_adr
-            if ':' in ip_adr:
-                text += f'  IPv6: {ip_with_mask}\n'
-            elif '.' in ip_adr:
-                text += f'  IPv4: {ip_with_mask}\n'
-            else:
-                text += f'  IP: {ip_with_mask}\n'
-    else:
-        text += '  Нет IP-адресов.\n'
+    status = "🔴 Офлайн"
+    incoming_traffic = "↓—"
+    outgoing_traffic = "↑—"
+    ipv4_address = "—"
 
     active_clients = db.get_active_list()
     active_info = next((ac for ac in active_clients if ac[0] == username), None)
     if active_info:
-        _, last_time, transfer, endpoint = active_info
-        text += f'  Последнее подключение: {last_time}\n'
-        text += f'  Передача данных: {transfer}\n'
-        text += f'  Endpoint: {endpoint}\n'
+        last_handshake_str = active_info[1].lower()
+        if last_handshake_str not in ['never', 'нет данных', '-']:
+            status = "🟢 Онлайн"
+            transfer = active_info[2]
+            incoming, outgoing = format_transfer(transfer)
+            incoming_traffic = f"↓{incoming}"
+            outgoing_traffic = f"↑{outgoing}"
+
+    allowed_ips = client_info[2]
+    ipv4_match = re.search(r'(\d{1,3}\.){3}\d{1,3}/\d+', allowed_ips)
+    if ipv4_match:
+        ipv4_address = ipv4_match.group(0)
     else:
-        text += '  Нет активных подключений.\n'
+        ipv4_address = "—"
 
     if expiration_time:
         now = datetime.now(pytz.UTC)
-        expiration_dt = expiration_time
-        if expiration_dt.tzinfo is None:
-            expiration_dt = expiration_dt.replace(tzinfo=pytz.UTC)
-        remaining = expiration_dt - now
-        if remaining.total_seconds() > 0:
-            days, seconds = remaining.days, remaining.seconds
-            hours = seconds // 3600
-            minutes = (seconds % 3600) // 60
-            text += f'  Оставшееся время: {days}д {hours}ч {minutes}м\n'
+        try:
+            expiration_dt = expiration_time
+            if expiration_dt.tzinfo is None:
+                expiration_dt = expiration_dt.replace(tzinfo=pytz.UTC)
+            remaining = expiration_dt - now
+            if remaining.total_seconds() > 0:
+                days, seconds = remaining.days, remaining.seconds
+                hours = seconds // 3600
+                minutes = (seconds % 3600) // 60
+                date_end = f"{days}д {hours}ч {minutes}м"
+            else:
+                date_end = "♾️ Неограниченно"
+        except Exception as e:
+            logger.error(f"Ошибка при обработке даты окончания: {e}")
+            date_end = "♾️ Неограниченно"
+    else:
+        date_end = "♾️ Неограниченно"
+
+    text = (
+        f"🌐 *IPv4:* {ipv4_address}\n"
+        f"🌐 *Статус соединения:* {status}\n"
+        f"📅 *Дата окончания:* {date_end}\n"
+        f"🔼 *Исходящий трафик:* {outgoing_traffic}\n"
+        f"🔽 *Входящий трафик:* {incoming_traffic}\n"
+    )
 
     keyboard = InlineKeyboardMarkup(row_width=2)
     keyboard.add(

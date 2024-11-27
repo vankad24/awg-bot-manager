@@ -2,12 +2,29 @@ import os
 import subprocess
 import configparser
 import json
-from datetime import datetime
 import pytz
 import socket
+import logging
+from datetime import datetime
 
 EXPIRATIONS_FILE = 'files/expirations.json'
 UTC = pytz.UTC
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+def get_amnezia_container():
+    cmd = "docker ps --filter 'name=amnezia-awg' --format '{{.Names}}'"
+    try:
+        output = subprocess.check_output(cmd, shell=True).decode().strip()
+        if output:
+            return output
+        else:
+            logger.error("Docker-контейнер 'amnezia-awg' не найден или не запущен.")
+            exit(1)
+    except subprocess.CalledProcessError:
+        logger.error("Не удалось выполнить Docker-команду для поиска контейнера 'amnezia-awg'.")
+        exit(1)
 
 def create_config(path='files/setting.ini'):
     os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -16,20 +33,25 @@ def create_config(path='files/setting.ini'):
 
     bot_token = input('Введите токен Telegram бота: ').strip()
     admin_id = input('Введите Telegram ID администратора: ').strip()
-    docker_container = input('Введите имя Docker-контейнера с AmneziaWG (можно узнать с помощью команды docker ps, (например amnezia-awg)): ').strip()
+
+    docker_container = get_amnezia_container()
+    logger.info(f"Найден Docker-контейнер: {docker_container}")
 
     cmd = f"docker exec {docker_container} find / -name wg0.conf"
     try:
         wg_config_file = subprocess.check_output(cmd, shell=True).decode().strip()
+        if not wg_config_file:
+            logger.warning("Не удалось найти файл конфигурации WireGuard 'wg0.conf' в контейнере. Используется путь по умолчанию.")
+            wg_config_file = '/opt/amnezia/awg/wg0.conf'
     except subprocess.CalledProcessError:
-        print("Ошибка при определении пути к файлу конфигурации WireGuard.")
+        logger.warning("Ошибка при определении пути к файлу конфигурации WireGuard. Используется путь по умолчанию.")
         wg_config_file = '/opt/amnezia/awg/wg0.conf'
 
     try:
         endpoint = subprocess.check_output("curl -s https://api.ipify.org", shell=True).decode().strip()
         socket.inet_aton(endpoint)
     except (subprocess.CalledProcessError, socket.error):
-        print("Ошибка при определении внешнего IP-адреса сервера.")
+        logger.error("Ошибка при определении внешнего IP-адреса сервера.")
         endpoint = input('Не удалось автоматически определить внешний IP-адрес. Пожалуйста, введите его вручную: ').strip()
 
     config.set("setting", "bot_token", bot_token)
@@ -40,6 +62,7 @@ def create_config(path='files/setting.ini'):
 
     with open(path, "w") as config_file:
         config.write(config_file)
+    logger.info(f"Конфигурация сохранена в {path}")
 
 def get_config(path='files/setting.ini'):
     if not os.path.exists(path):
@@ -96,17 +119,13 @@ def get_clients_from_clients_table():
         client_map = {client['clientId']: client['userData']['clientName'] for client in clients_table}
         return client_map
     except subprocess.CalledProcessError as e:
-        print(f"Ошибка при получении clientsTable: {e}")
+        logger.error(f"Ошибка при получении clientsTable: {e}")
         return {}
     except json.JSONDecodeError:
-        print("Ошибка при разборе clientsTable JSON.")
+        logger.error("Ошибка при разборе clientsTable JSON.")
         return {}
 
 def parse_client_name(full_name):
-    """
-    Извлекает основную часть имени клиента, удаляя дополнительные сведения в квадратных скобках.
-    Например, из "Admin [Android (14.0)]" вернет "Admin".
-    """
     return full_name.split('[')[0].strip()
 
 def get_client_list():
@@ -149,7 +168,7 @@ def get_client_list():
                 i += 1
         return clients
     except subprocess.CalledProcessError as e:
-        print(f"Ошибка при получении списка клиентов: {e}")
+        logger.error(f"Ошибка при получении списка клиентов: {e}")
         return []
 
 def get_active_list():
@@ -162,7 +181,7 @@ def get_active_list():
         clients = get_client_list()
         client_key_map = {client[1]: client[0] for client in clients}
 
-        cmd = f"docker exec -i {docker_container} wg"
+        cmd = f"docker exec -i {docker_container} wg show"
         call = subprocess.check_output(cmd, shell=True)
         wg_output = call.decode('utf-8')
 
@@ -180,6 +199,21 @@ def get_active_list():
             elif line.startswith('transfer:') and 'public_key' in current_peer:
                 current_peer['transfer'] = line.split('transfer: ')[1].strip()
             elif line == '' and 'public_key' in current_peer:
+                last_handshake = current_peer.get('latest_handshake', '').lower()
+                if last_handshake not in ['never', 'нет данных', '-']:
+                    peer_public_key = current_peer.get('public_key')
+                    if peer_public_key in client_key_map:
+                        username = client_key_map[peer_public_key]
+                        last_time = current_peer.get('latest_handshake', 'Нет данных')
+                        transfer = current_peer.get('transfer', 'Нет данных')
+                        endpoint = current_peer.get('endpoint', 'Нет данных')
+                        save_client_endpoint(username, endpoint)
+                        active_clients.append([username, last_time, transfer, endpoint])
+                current_peer = {}
+
+        if 'public_key' in current_peer:
+            last_handshake = current_peer.get('latest_handshake', '').lower()
+            if last_handshake not in ['never', 'нет данных', '-']:
                 peer_public_key = current_peer.get('public_key')
                 if peer_public_key in client_key_map:
                     username = client_key_map[peer_public_key]
@@ -188,17 +222,6 @@ def get_active_list():
                     endpoint = current_peer.get('endpoint', 'Нет данных')
                     save_client_endpoint(username, endpoint)
                     active_clients.append([username, last_time, transfer, endpoint])
-                current_peer = {}
-
-        if 'public_key' in current_peer:
-            peer_public_key = current_peer.get('public_key')
-            if peer_public_key in client_key_map:
-                username = client_key_map[peer_public_key]
-                last_time = current_peer.get('latest_handshake', 'Нет данных')
-                transfer = current_peer.get('transfer', 'Нет данных')
-                endpoint = current_peer.get('endpoint', 'Нет данных')
-                save_client_endpoint(username, endpoint)
-                active_clients.append([username, last_time, transfer, endpoint])
 
         return active_clients
 
@@ -232,6 +255,7 @@ def load_expirations():
                     data[user] = None
             return data
         except json.JSONDecodeError:
+            logger.error("Ошибка при загрузке expirations.json.")
             return {}
 
 def save_expirations(expirations):

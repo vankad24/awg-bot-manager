@@ -13,8 +13,10 @@ import pytz
 import zipfile
 import ipaddress
 import humanize
+import shutil
 from aiogram import Bot, types
 from aiogram.dispatcher import Dispatcher
+from aiogram.dispatcher.middlewares import BaseMiddleware
 from aiogram.utils import executor
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from datetime import datetime, timedelta
@@ -42,9 +44,16 @@ WG_CONFIG_FILE = wg_config_file
 DOCKER_CONTAINER = docker_container
 ENDPOINT = endpoint
 
+class AdminMessageDeletionMiddleware(BaseMiddleware):
+    async def on_process_message(self, message: types.Message, data: dict):
+        if message.from_user.id == admin:
+            asyncio.create_task(delete_message_after_delay(message.chat.id, message.message_id, delay=2))
+
 dp = Dispatcher(bot)
 scheduler = AsyncIOScheduler(timezone=pytz.UTC)
 scheduler.start()
+
+dp.middleware.setup(AdminMessageDeletionMiddleware())
 
 main_menu_markup = InlineKeyboardMarkup(row_width=1).add(
     InlineKeyboardButton("Добавить пользователя", callback_data="add_user"),
@@ -200,7 +209,7 @@ async def handle_messages(message: types.Message):
         user_name = message.text.strip()
         if not all(c.isalnum() or c in "-_" for c in user_name):
             await message.reply("Имя пользователя может содержать только буквы, цифры, дефисы и подчёркивания.")
-            asyncio.create_task(delete_message_after_delay(message.chat.id, message.message_id, delay=5))
+            asyncio.create_task(delete_message_after_delay(sent_message.chat.id, sent_message.message_id, delay=2))
             return
         user_main_messages[admin]['client_name'] = user_name
         user_main_messages[admin]['state'] = 'waiting_for_duration'
@@ -227,6 +236,7 @@ async def handle_messages(message: types.Message):
             await message.answer("Ошибка: главное сообщение не найдено.")
     else:
         await message.reply("Неизвестная команда или действие.")
+        asyncio.create_task(delete_message_after_delay(sent_message.chat.id, sent_message.message_id, delay=2))
 
 @dp.callback_query_handler(lambda c: c.data.startswith('add_user'))
 async def prompt_for_user_name(callback_query: types.CallbackQuery):
@@ -287,6 +297,14 @@ async def set_config_duration(callback: types.CallbackQuery):
     )
     await callback.answer()
 
+def format_vpn_key(vpn_key, num_lines=8):
+    line_length = len(vpn_key) // num_lines
+    if len(vpn_key) % num_lines != 0:
+        line_length += 1
+    lines = [vpn_key[i:i+line_length] for i in range(0, len(vpn_key), line_length)]
+    formatted_key = '\n'.join(lines)
+    return formatted_key
+
 @dp.callback_query_handler(lambda c: c.data.startswith('traffic_limit_'))
 async def set_traffic_limit(callback_query: types.CallbackQuery):
     if callback_query.from_user.id != admin:
@@ -343,10 +361,12 @@ async def set_traffic_limit(callback_query: types.CallbackQuery):
                 vpn_key = await generate_vpn_key(conf_path)
             if vpn_key:
                 instruction_text = (
-                    "\nAmneziaVPN [Google play](https://play.google.com/store/apps/details?id=org.amnezia.vpn&hl=ru), "
-                    "[GitHub](https://github.com/amnezia-vpn/amnezia-client)\n"
+                    "\nAmneziaVPN [Google Play](https://play.google.com/store/apps/details?id=org.amnezia.vpn&hl=ru), "
+                    "[GitHub](https://github.com/amnezia-vpn/amnezia-client)"
                 )
-                caption = f"\n{instruction_text}\n```{vpn_key}```"
+                formatted_key = format_vpn_key(vpn_key)
+                key_message = f"```\n{formatted_key}\n```"
+                caption = f"{instruction_text}\n{key_message}"
             else:
                 caption = "VPN ключ не был сгенерирован."
             if os.path.exists(conf_path):
@@ -365,7 +385,8 @@ async def set_traffic_limit(callback_query: types.CallbackQuery):
             asyncio.create_task(delete_message_after_delay(admin, sent_message.message_id, delay=15))
             await callback_query.answer()
             return
-        except Exception:
+        except Exception as e:
+            logger.error(f"Ошибка при отправке конфигурации: {e}")
             confirmation_text = "Произошла ошибка."
             sent_message = await bot.send_message(admin, confirmation_text, parse_mode="Markdown", disable_notification=True)
             asyncio.create_task(delete_message_after_delay(admin, sent_message.message_id, delay=15))
@@ -683,12 +704,12 @@ async def client_delete_callback(callback_query: types.CallbackQuery):
             scheduler.remove_job(job_id=username)
         except:
             pass
-        conf_path = os.path.join('users', username, f'{username}.conf')
+        user_dir = os.path.join('users', username)
         try:
-            if os.path.exists(conf_path):
-                os.remove(conf_path)
+            if os.path.exists(user_dir):
+                shutil.rmtree(user_dir)
         except Exception as e:
-            logger.error(f"Ошибка при удалении файлов для пользователя {username}: {e}")
+            logger.error(f"Ошибка при удалении директории для пользователя {username}: {e}")
         confirmation_text = f"Пользователь **{username}** успешно удален."
     else:
         confirmation_text = f"Не удалось удалить пользователя **{username}**."
@@ -786,18 +807,18 @@ async def send_user_config(callback_query: types.CallbackQuery):
         user_dir = os.path.join('users', username)
         conf_path = os.path.join(user_dir, f'{username}.conf')
         if not os.path.exists(conf_path):
-            success = db.root_add(username, ipv6=False)
-            if not success:
-                await callback_query.answer("Не удалось создать конфигурацию пользователя.", show_alert=True)
-                return
+            await callback_query.answer("Конфигурационный файл пользователя отсутствует. Возможно, пользователь был создан вручную, и его конфигурация недоступна.", show_alert=True)
+            return
         if os.path.exists(conf_path):
             vpn_key = await generate_vpn_key(conf_path)
             if vpn_key:
                 instruction_text = (
-                    "\nAmneziaVPN [Google play](https://play.google.com/store/apps/details?id=org.amnezia.vpn&hl=ru), "
-                    "[GitHub](https://github.com/amnezia-vpn/amnezia-client)\n"
+                    "\nAmneziaVPN [Google Play](https://play.google.com/store/apps/details?id=org.amnezia.vpn&hl=ru), "
+                    "[GitHub](https://github.com/amnezia-vpn/amnezia-client)"
                 )
-                caption = f"\n{instruction_text}\n```{vpn_key}```"
+                formatted_key = format_vpn_key(vpn_key)
+                key_message = f"```\n{formatted_key}\n```"
+                caption = f"{instruction_text}\n{key_message}"
             else:
                 caption = "VPN ключ не был сгенерирован."
             with open(conf_path, 'rb') as config:
@@ -917,6 +938,7 @@ def humanize_bytes(bytes_value):
 
 async def read_traffic(username):
     traffic_file = os.path.join('users', username, 'traffic.json')
+    os.makedirs(os.path.dirname(traffic_file), exist_ok=True)
     if not os.path.exists(traffic_file):
         traffic_data = {
             "total_incoming": 0,
@@ -1011,12 +1033,12 @@ async def deactivate_user(client_name: str):
             scheduler.remove_job(job_id=client_name)
         except:
             pass
-        conf_path = os.path.join('users', client_name, f'{client_name}.conf')
+        user_dir = os.path.join('users', client_name)
         try:
-            if os.path.exists(conf_path):
-                os.remove(conf_path)
+            if os.path.exists(user_dir):
+                shutil.rmtree(user_dir)
         except Exception as e:
-            logger.error(f"Ошибка при удалении файлов для пользователя {client_name}: {e}")
+            logger.error(f"Ошибка при удалении директории для пользователя {client_name}: {e}")
         confirmation_text = f"Конфигурация пользователя **{client_name}** была деактивирована из-за превышения лимита трафика."
         sent_message = await bot.send_message(admin, confirmation_text, parse_mode="Markdown", disable_notification=True)
         asyncio.create_task(delete_message_after_delay(admin, sent_message.message_id, delay=15))
@@ -1042,6 +1064,9 @@ async def check_environment():
         return False
     return True
 
+async def periodic_ensure_peer_names():
+    db.ensure_peer_names()
+
 async def on_startup(dp):
     os.makedirs('files/connections', exist_ok=True)
     os.makedirs('users', exist_ok=True)
@@ -1053,7 +1078,8 @@ async def on_startup(dp):
         await bot.close()
         sys.exit(1)
     if not scheduler.running:
-        scheduler.add_job(update_all_clients_traffic, IntervalTrigger(minutes=5))
+        scheduler.add_job(update_all_clients_traffic, IntervalTrigger(minutes=1))
+        scheduler.add_job(periodic_ensure_peer_names, IntervalTrigger(minutes=1))
         scheduler.start()
         logger.info("Планировщик запущен для обновления трафика каждые 5 минут.")
     users = db.get_users_with_expiration()

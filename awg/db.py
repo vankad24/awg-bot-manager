@@ -5,6 +5,7 @@ import json
 import pytz
 import socket
 import logging
+import tempfile
 from datetime import datetime
 
 EXPIRATIONS_FILE = 'files/expirations.json'
@@ -64,6 +65,81 @@ def create_config(path='files/setting.ini'):
         config.write(config_file)
     logger.info(f"Конфигурация сохранена в {path}")
 
+def ensure_peer_names():
+    setting = get_config()
+    wg_config_file = setting['wg_config_file']
+    docker_container = setting['docker_container']
+
+    clientsTable = get_full_clients_table()
+    clients_dict = {client['clientId']: client['userData'] for client in clientsTable}
+
+    try:
+        cmd = f"docker exec -i {docker_container} cat {wg_config_file}"
+        config_content = subprocess.check_output(cmd, shell=True).decode('utf-8')
+
+        lines = config_content.splitlines()
+        new_config_lines = []
+        i = 0
+        modified = False
+        updated_clientsTable = False
+
+        while i < len(lines):
+            line = lines[i]
+            if line.strip().startswith('[Peer]'):
+                peer_block = [line]
+                i += 1
+                has_name_comment = False
+                client_public_key = ''
+                while i < len(lines) and lines[i].strip() != '':
+                    peer_line = lines[i]
+                    if peer_line.strip().startswith('#'):
+                        has_name_comment = True
+                    elif peer_line.strip().startswith('PublicKey ='):
+                        client_public_key = peer_line.strip().split('=', 1)[1].strip()
+                    peer_block.append(peer_line)
+                    i += 1
+                if not has_name_comment:
+                    if client_public_key in clients_dict:
+                        client_name = clients_dict[client_public_key].get('clientName', f"client_{client_public_key[:6]}")
+                    else:
+                        client_name = f"client_{client_public_key[:6]}"
+                        clients_dict[client_public_key] = {
+                            'clientName': client_name,
+                            'creationDate': datetime.now().isoformat()
+                        }
+                        updated_clientsTable = True
+                    peer_block.insert(1, f'# {client_name}')
+                    modified = True
+                new_config_lines.extend(peer_block)
+                if i < len(lines):
+                    new_config_lines.append(lines[i])
+                    i += 1
+            else:
+                new_config_lines.append(line)
+                i += 1
+
+        if modified:
+            new_config_content = '\n'.join(new_config_lines)
+            with tempfile.NamedTemporaryFile(mode='w', delete=False) as temp_config:
+                temp_config.write(new_config_content)
+                temp_config_path = temp_config.name
+            docker_cmd = f"docker cp {temp_config_path} {docker_container}:{wg_config_file}"
+            subprocess.check_call(docker_cmd, shell=True)
+            os.remove(temp_config_path)
+            logger.info("Конфигурационный файл WireGuard обновлён с добавлением комментариев # name_client.")
+
+        if updated_clientsTable:
+            clientsTable_list = [{'clientId': key, 'userData': value} for key, value in clients_dict.items()]
+            with tempfile.NamedTemporaryFile(mode='w', delete=False) as temp_clientsTable:
+                json.dump(clientsTable_list, temp_clientsTable)
+                temp_clientsTable_path = temp_clientsTable.name
+            docker_cmd = f"docker cp {temp_clientsTable_path} {docker_container}:/opt/amnezia/awg/clientsTable"
+            subprocess.check_call(docker_cmd, shell=True)
+            os.remove(temp_clientsTable_path)
+            logger.info("clientsTable обновлён с новыми клиентами.")
+    except Exception as e:
+        logger.error(f"Ошибка при обновлении комментариев в конфигурации WireGuard: {e}")
+
 def get_config(path='files/setting.ini'):
     if not os.path.exists(path):
         create_config(path)
@@ -102,11 +178,16 @@ def root_add(id_user, ipv6=False):
     wg_config_file = setting['wg_config_file']
     docker_container = setting['docker_container']
 
-    cmd = ["./newclient.sh", id_user, endpoint, wg_config_file, docker_container]
-
-    if subprocess.call(cmd) == 0:
-        return True
-    return False
+    clients = get_client_list()
+    client_entry = next((c for c in clients if c[0] == id_user), None)
+    if client_entry:
+        logger.info(f"Пользователь {id_user} уже существует. Генерация конфигурации невозможна без приватного ключа.")
+        return False
+    else:
+        cmd = ["./newclient.sh", id_user, endpoint, wg_config_file, docker_container]
+        if subprocess.call(cmd) == 0:
+            return True
+        return False
 
 def get_clients_from_clients_table():
     setting = get_config()
@@ -240,6 +321,8 @@ def deactive_user_db(client_name):
         client_public_key = client_entry[1]
         if subprocess.call(["./removeclient.sh", client_name, client_public_key, wg_config_file, docker_container]) == 0:
             return True
+    else:
+        logger.error(f"Пользователь {client_name} не найден в списке клиентов.")
     return False
 
 def load_expirations():

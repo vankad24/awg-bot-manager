@@ -1,6 +1,7 @@
 # AmneziaVPN Telegram Bot
 
-Телеграм-бот на Python для управления [AmneziaVPN](https://github.com/amnezia-vpn/amnezia-client). Этот бот позволяет легко управлять клиентами. Подразумевается, что у вас уже установлен Python 3.11.x. Используется библиотека `aiogram` версии 2.25.2.
+Телеграм-бот на Python для управления [AmneziaVPN](https://github.com/amnezia-vpn/amnezia-client). 
+Этот бот позволяет легко управлять клиентами. Используется библиотека `aiogram` версии 2.25.2.
 
 ## Оглавление
 
@@ -35,7 +36,9 @@
     - Придумать уникальное имя пользователя для бота (например, `WireGuardManagerBot_bot`). Оно должно оканчиваться на `_bot`.
 - После создания бота BotFather отправит вам токен для доступа к API. Его запросит бот во время первоначальной инициализации.
 
-4. Загрузите и запустите скрипт `install.sh`, с помощью которого будет автоматически установлен бот, со всеми зависимостями, в том числе, в качестве системной службы (автозапуск):
+4. Получите ваш Telegram ID с помощью [Get My ID](https://t.me/getmyid_bot), просто написав боту. 
+
+5. Загрузите и запустите скрипт `install.sh`, с помощью которого будет автоматически установлен бот, со всеми зависимостями, в том числе, в качестве системной службы (автозапуск):
 
     ```bash
     curl -O https://raw.githubusercontent.com/JB-SelfCompany/awg-docker-bot/main/install.sh && chmod +x install.sh && ./install.sh
@@ -50,6 +53,12 @@
 При создании резервной копии, в архив добавляется директория connections (создается и содержит в себе логи подключений клиентов), conf, png, и сам конфигурационный файл. 
 
 ## Поддержка
+
+Поддержать разработчика можете следующими способами:
+- [Boosty](https://boosty.to/jb-selfcompany/donate)
+- LTC `ltc1qsa49jtpxau9f28fej7vpzj99lstx44792k4ack`
+- XMR `43ojbNWXSNCWjXAk1RbTvidACZKrWSpV7hXRosn9UQJhWEHHkzCB4g8Hh5sHhSzU7gBpwWkMFhgwuPLLuox6GqEQN7CLgHp`
+- BTC `bc1qt75kx0lwsw2npfh06kfq37gf97eper00sxp3tf` 
 
 Если у вас возникли вопросы или проблемы с установкой и использованием бота, создайте [issue](https://github.com/JB-SelfCompany/awg-docker-bot/issues) в этом репозитории или обратитесь к разработчику.
 

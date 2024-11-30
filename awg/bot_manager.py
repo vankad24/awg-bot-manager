@@ -505,8 +505,8 @@ async def client_selected_callback(callback_query: types.CallbackQuery):
         f"🌐 *IPv4:* {ipv4_address}\n"
         f"🌐 *Статус соединения:* {status}\n"
         f"{date_end}\n"
-        f"🔼 *Исходящий трафик:* {outgoing_traffic}\n"
-        f"🔽 *Входящий трафик:* {incoming_traffic}\n"
+        f"🔼 *Исходящий трафик:* {incoming_traffic}\n"
+        f"🔽 *Входящий трафик:* {outgoing_traffic}\n"
         f"📊 *Всего:* ↑↓{formatted_total} из **{traffic_limit_display}**\n"
     )
     keyboard = InlineKeyboardMarkup(row_width=2)

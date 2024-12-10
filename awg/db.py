@@ -6,7 +6,7 @@ import pytz
 import socket
 import logging
 import tempfile
-from datetime import datetime
+from datetime import datetime, timedelta
 
 EXPIRATIONS_FILE = 'files/expirations.json'
 UTC = pytz.UTC
@@ -167,7 +167,8 @@ def save_client_endpoint(username, endpoint):
     else:
         data = {}
 
-    data[ip_address] = timestamp
+    if ip_address not in data:
+        data[ip_address] = timestamp
 
     with open(file_path, 'w') as f:
         json.dump(data, f)
@@ -255,60 +256,82 @@ def get_client_list():
 def get_active_list():
     setting = get_config()
     docker_container = setting['docker_container']
-
     client_map = get_clients_from_clients_table()
-
+    
     try:
         clients = get_client_list()
         client_key_map = {client[1]: client[0] for client in clients}
-
+        
         cmd = f"docker exec -i {docker_container} wg show"
         call = subprocess.check_output(cmd, shell=True)
         wg_output = call.decode('utf-8')
-
+        
         active_clients = []
         current_peer = {}
+        
         for line in wg_output.splitlines():
             line = line.strip()
             if line.startswith('peer:'):
+                if current_peer:
+                    if 'public_key' in current_peer and current_peer['public_key'] in client_key_map:
+                        current_peer['name'] = client_key_map[current_peer['public_key']]
+                        active_clients.append(current_peer)
                 peer_public_key = line.split('peer: ')[1].strip()
                 current_peer = {'public_key': peer_public_key}
-            elif line.startswith('endpoint:') and 'public_key' in current_peer:
+            elif line.startswith('endpoint:'):
                 current_peer['endpoint'] = line.split('endpoint: ')[1].strip()
-            elif line.startswith('latest handshake:') and 'public_key' in current_peer:
-                current_peer['latest_handshake'] = line.split('latest handshake: ')[1].strip()
-            elif line.startswith('transfer:') and 'public_key' in current_peer:
+            elif line.startswith('latest handshake:'):
+                current_peer['last_handshake'] = line.split('latest handshake: ')[1].strip()
+            elif line.startswith('transfer:'):
                 current_peer['transfer'] = line.split('transfer: ')[1].strip()
-            elif line == '' and 'public_key' in current_peer:
-                last_handshake = current_peer.get('latest_handshake', '').lower()
-                if last_handshake not in ['never', 'нет данных', '-']:
-                    peer_public_key = current_peer.get('public_key')
-                    if peer_public_key in client_key_map:
-                        username = client_key_map[peer_public_key]
-                        last_time = current_peer.get('latest_handshake', 'Нет данных')
-                        transfer = current_peer.get('transfer', 'Нет данных')
-                        endpoint = current_peer.get('endpoint', 'Нет данных')
-                        save_client_endpoint(username, endpoint)
-                        active_clients.append([username, last_time, transfer, endpoint])
-                current_peer = {}
-
-        if 'public_key' in current_peer:
-            last_handshake = current_peer.get('latest_handshake', '').lower()
-            if last_handshake not in ['never', 'нет данных', '-']:
-                peer_public_key = current_peer.get('public_key')
-                if peer_public_key in client_key_map:
-                    username = client_key_map[peer_public_key]
-                    last_time = current_peer.get('latest_handshake', 'Нет данных')
-                    transfer = current_peer.get('transfer', 'Нет данных')
-                    endpoint = current_peer.get('endpoint', 'Нет данных')
-                    save_client_endpoint(username, endpoint)
-                    active_clients.append([username, last_time, transfer, endpoint])
-
+        
+        if current_peer and 'public_key' in current_peer and current_peer['public_key'] in client_key_map:
+            current_peer['name'] = client_key_map[current_peer['public_key']]
+            active_clients.append(current_peer)
+            
         return active_clients
-
-    except subprocess.CalledProcessError as e:
-        print(f"Ошибка при получении активных клиентов: {e}")
+    except Exception as e:
+        logger.error(f"Error getting active list: {e}")
         return []
+
+def process_peer(peer, active_clients, client_key_map):
+    if 'public_key' not in peer:
+        return
+        
+    handshake = peer.get('latest_handshake', '')
+    if not handshake:
+        return
+        
+    try:
+        handshake_time = parse_handshake_time(handshake)
+        if handshake_time:
+            if datetime.now() - handshake_time <= timedelta(minutes=2):
+                client_name = client_key_map.get(peer['public_key'], 'Unknown')
+                active_clients.append([
+                    client_name,
+                    peer['public_key'],
+                    peer.get('endpoint', 'N/A'),
+                    handshake,
+                    peer.get('transfer', 'N/A')
+                ])
+    except Exception as e:
+        logger.error(f"Error processing peer handshake: {e}")
+
+def parse_handshake_time(handshake_str):
+    try:
+        if 'minute' in handshake_str or 'second' in handshake_str:
+            now = datetime.now()
+            if 'minute' in handshake_str:
+                minutes = int(handshake_str.split()[0])
+                return now - timedelta(minutes=minutes)
+            elif 'second' in handshake_str:
+                seconds = int(handshake_str.split()[0])
+                return now - timedelta(seconds=seconds)
+        else:
+            return datetime.strptime(handshake_str, '%Y-%m-%d %H:%M:%S')
+    except Exception as e:
+        logger.error(f"Error parsing handshake time: {e}")
+        return None
 
 def deactive_user_db(client_name):
     setting = get_config()

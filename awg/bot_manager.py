@@ -430,6 +430,7 @@ async def client_selected_callback(callback_query: types.CallbackQuery):
     if not client_info:
         await callback_query.answer("Ошибка: пользователь не найден.", show_alert=True)
         return
+
     expiration_time = db.get_user_expiration(username)
     traffic_limit = db.get_user_traffic_limit(username)
     status = "🔴 Офлайн"
@@ -438,10 +439,19 @@ async def client_selected_callback(callback_query: types.CallbackQuery):
     ipv4_address = "—"
     total_bytes = 0
     formatted_total = "0.00B"
+
     active_clients = db.get_active_list()
-    active_info = next((ac for ac in active_clients if ac[0] == username), None)
+    active_info = None
+    for ac in active_clients:
+        if isinstance(ac, dict) and ac.get('name') == username:
+            active_info = ac
+            break
+        elif isinstance(ac, (list, tuple)) and ac[0] == username:
+            active_info = {'name': ac[0], 'last_handshake': ac.get(1, 'never'), 'transfer': ac.get(2, '0/0')}
+            break
+
     if active_info:
-        last_handshake_str = active_info[1]
+        last_handshake_str = active_info.get('last_handshake', 'never')
         if last_handshake_str.lower() not in ['never', 'нет данных', '-']:
             try:
                 last_handshake_dt = parse_relative_time(last_handshake_str)
@@ -450,33 +460,37 @@ async def client_selected_callback(callback_query: types.CallbackQuery):
                     if delta <= timedelta(minutes=1):
                         status = "🟢 Онлайн"
                     else:
-                        status = "❌ Офлайн"
-                    transfer = active_info[2]
-                    incoming_bytes, outgoing_bytes = parse_transfer(transfer)
-                    incoming_traffic = f"↓{humanize_bytes(incoming_bytes)}"
-                    outgoing_traffic = f"↑{humanize_bytes(outgoing_bytes)}"
-                    traffic_data = await update_traffic(username, incoming_bytes, outgoing_bytes)
-                    total_bytes = traffic_data.get('total_incoming', 0) + traffic_data.get('total_outgoing', 0)
-                    formatted_total = humanize_bytes(total_bytes)
-                    if traffic_limit != "Неограниченно":
-                        limit_bytes = parse_traffic_limit(traffic_limit)
-                        if total_bytes >= limit_bytes:
-                            await deactivate_user(username)
-                            await callback_query.answer(f"Пользователь **{username}** превысил лимит трафика и был удален.", show_alert=True)
-                            return
+                        status = "🔴 Офлайн"
+
+                transfer = active_info.get('transfer', '0/0')
+                incoming_bytes, outgoing_bytes = parse_transfer(transfer)
+                incoming_traffic = f"↓{humanize_bytes(incoming_bytes)}"
+                outgoing_traffic = f"↑{humanize_bytes(outgoing_bytes)}"
+                traffic_data = await update_traffic(username, incoming_bytes, outgoing_bytes)
+                total_bytes = traffic_data.get('total_incoming', 0) + traffic_data.get('total_outgoing', 0)
+                formatted_total = humanize_bytes(total_bytes)
+
+                if traffic_limit != "Неограниченно":
+                    limit_bytes = parse_traffic_limit(traffic_limit)
+                    if total_bytes >= limit_bytes:
+                        await deactivate_user(username)
+                        await callback_query.answer(
+                            f"Пользователь {username} превысил лимит трафика и был удален.",
+                            show_alert=True
+                        )
+                        return
             except ValueError:
                 logger.error(f"Некорректный формат даты для пользователя {username}: {last_handshake_str}")
-                status = "❌ Офлайн"
+                status = "🔴 Офлайн"
     else:
         traffic_data = await read_traffic(username)
         total_bytes = traffic_data.get('total_incoming', 0) + traffic_data.get('total_outgoing', 0)
         formatted_total = humanize_bytes(total_bytes)
+
     allowed_ips = client_info[2]
     ipv4_match = re.search(r'(\d{1,3}\.){3}\d{1,3}/\d+', allowed_ips)
-    if ipv4_match:
-        ipv4_address = ipv4_match.group(0)
-    else:
-        ipv4_address = "—"
+    ipv4_address = ipv4_match.group(0) if ipv4_match else "—"
+
     if expiration_time:
         now = datetime.now(pytz.UTC)
         try:
@@ -496,19 +510,19 @@ async def client_selected_callback(callback_query: types.CallbackQuery):
             date_end = "📅 ♾️ Неограниченно"
     else:
         date_end = "📅 ♾️ Неограниченно"
-    if traffic_limit == "Неограниченно":
-        traffic_limit_display = "♾️ Неограниченно"
-    else:
-        traffic_limit_display = traffic_limit
+
+    traffic_limit_display = "♾️ Неограниченно" if traffic_limit == "Неограниченно" else traffic_limit
+
     text = (
-	f"📧 *Имя:* {username}\n"
-        f"🌐 *IPv4:* {ipv4_address}\n"
-        f"🌐 *Статус соединения:* {status}\n"
+        f"📧 _Имя:_ {username}\n"
+        f"🌐 _IPv4:_ {ipv4_address}\n"
+        f"🌐 _Статус соединения:_ {status}\n"
         f"{date_end}\n"
-        f"🔼 *Исходящий трафик:* {incoming_traffic}\n"
-        f"🔽 *Входящий трафик:* {outgoing_traffic}\n"
-        f"📊 *Всего:* ↑↓{formatted_total} из **{traffic_limit_display}**\n"
+        f"🔼 _Исходящий трафик:_ {incoming_traffic}\n"
+        f"🔽 _Входящий трафик:_ {outgoing_traffic}\n"
+        f"📊 _Всего:_ ↑↓{formatted_total} из **{traffic_limit_display}**\n"
     )
+
     keyboard = InlineKeyboardMarkup(row_width=2)
     keyboard.add(
         InlineKeyboardButton("IP info", callback_data=f"ip_info_{username}"),
@@ -521,8 +535,10 @@ async def client_selected_callback(callback_query: types.CallbackQuery):
         InlineKeyboardButton("Назад", callback_data="list_users"),
         InlineKeyboardButton("Домой", callback_data="home")
     )
+
     main_chat_id = user_main_messages.get(admin, {}).get('chat_id')
     main_message_id = user_main_messages.get(admin, {}).get('message_id')
+
     if main_chat_id and main_message_id:
         try:
             await bot.edit_message_text(
@@ -538,6 +554,7 @@ async def client_selected_callback(callback_query: types.CallbackQuery):
     else:
         await callback_query.answer("Ошибка: главное сообщение не найдено.", show_alert=True)
         return
+
     await callback_query.answer()
 
 @dp.callback_query_handler(lambda c: c.data.startswith('list_users'))
@@ -545,20 +562,29 @@ async def list_users_callback(callback_query: types.CallbackQuery):
     if callback_query.from_user.id != admin:
         await callback_query.answer("У вас нет прав для выполнения этого действия.", show_alert=True)
         return
+
     clients = db.get_client_list()
     if not clients:
         await callback_query.answer("Список пользователей пуст.", show_alert=True)
         return
+
     active_clients = db.get_active_list()
     active_clients_dict = {}
     for client in active_clients:
-        username = client[0]
-        last_handshake = client[1]
-        active_clients_dict[username] = last_handshake
+        if isinstance(client, dict):
+            username = client.get('name')
+            last_handshake = client.get('last_handshake', 'never')
+        else:
+            username = client[0] if isinstance(client, (list, tuple)) else str(client)
+            last_handshake = 'never'
+        if username:
+            active_clients_dict[username] = last_handshake
+
     keyboard = InlineKeyboardMarkup(row_width=2)
     now = datetime.now(pytz.UTC)
+
     for client in clients:
-        username = client[0]
+        username = client[0]  
         last_handshake_str = active_clients_dict.get(username)
         if last_handshake_str and last_handshake_str.lower() not in ['never', 'нет данных', '-']:
             try:
@@ -569,7 +595,7 @@ async def list_users_callback(callback_query: types.CallbackQuery):
                     if delta_days <= 5:
                         status_display = f"🟢({delta_days}d) {username}"
                     else:
-                        status_display = f"❌(?d) {username}"
+                        status_display = f"❌({delta_days}d) {username}"
                 else:
                     status_display = f"❌(?d) {username}"
             except ValueError:
@@ -577,10 +603,17 @@ async def list_users_callback(callback_query: types.CallbackQuery):
                 status_display = f"❌(?d) {username}"
         else:
             status_display = f"❌(?d) {username}"
-        keyboard.insert(InlineKeyboardButton(status_display, callback_data=f"client_{username}"))
+
+        keyboard.insert(InlineKeyboardButton(
+            status_display,
+            callback_data=f"client_{username}"
+        ))
+
     keyboard.add(InlineKeyboardButton("Домой", callback_data="home"))
+
     main_chat_id = user_main_messages.get(admin, {}).get('chat_id')
     main_message_id = user_main_messages.get(admin, {}).get('message_id')
+
     if main_chat_id and main_message_id:
         try:
             await bot.edit_message_text(
@@ -593,12 +626,23 @@ async def list_users_callback(callback_query: types.CallbackQuery):
             logger.error(f"Ошибка при редактировании сообщения: {e}")
             await callback_query.answer("Ошибка при обновлении сообщения.", show_alert=True)
     else:
-        sent_message = await callback_query.message.reply("Выберите пользователя:", reply_markup=keyboard)
-        user_main_messages[admin] = {'chat_id': sent_message.chat.id, 'message_id': sent_message.message_id}
+        sent_message = await callback_query.message.reply(
+            "Выберите пользователя:",
+            reply_markup=keyboard
+        )
+        user_main_messages[admin] = {
+            'chat_id': sent_message.chat.id,
+            'message_id': sent_message.message_id
+        }
         try:
-            await bot.pin_chat_message(chat_id=sent_message.chat.id, message_id=sent_message.message_id, disable_notification=True)
+            await bot.pin_chat_message(
+                chat_id=sent_message.chat.id,
+                message_id=sent_message.message_id,
+                disable_notification=True
+            )
         except:
             pass
+
     await callback_query.answer()
 
 @dp.callback_query_handler(lambda c: c.data.startswith('connections_'))
@@ -606,38 +650,64 @@ async def client_connections_callback(callback_query: types.CallbackQuery):
     _, username = callback_query.data.split('connections_', 1)
     username = username.strip()
     file_path = os.path.join('files', 'connections', f'{username}_ip.json')
-    if not os.path.exists(file_path):
-        await callback_query.answer("Нет данных о подключениях пользователя.", show_alert=True)
-        return
+    
+    os.makedirs(os.path.join('files', 'connections'), exist_ok=True)
+    
     try:
-        async with aiofiles.open(file_path, 'r') as f:
-            data = json.loads(await f.read())
-        sorted_ips = sorted(data.items(), key=lambda x: datetime.strptime(x[1], '%d.%m.%Y %H:%M'), reverse=True)
-        last_connections = sorted_ips[:5]
-        isp_tasks = [get_isp_info(ip) for ip, _ in last_connections]
-        isp_results = await asyncio.gather(*isp_tasks)
-        connections_text = f"*Последние подключения пользователя {username}:*\n"
-        for (ip, timestamp), isp in zip(last_connections, isp_results):
-            connections_text += f"{ip} ({isp}) - {timestamp}\n"
+        active_clients = db.get_active_list()
+        active_info = next((client for client in active_clients if isinstance(client, dict) and client.get('name') == username), None)
+        
+        if active_info and active_info.get('endpoint'):
+            last_handshake_str = active_info.get('last_handshake', 'never')
+            if last_handshake_str.lower() not in ['never', 'нет данных', '-']:
+                try:
+                    last_handshake_dt = parse_relative_time(last_handshake_str)
+                    if last_handshake_dt:
+                        delta = datetime.now(pytz.UTC) - last_handshake_dt
+                        if delta <= timedelta(minutes=1):
+                            endpoint = active_info['endpoint'].split(':')[0]
+                            current_time = datetime.now().strftime('%d.%m.%Y %H:%M')
+                            
+                            if os.path.exists(file_path):
+                                async with aiofiles.open(file_path, 'r') as f:
+                                    data = json.loads(await f.read())
+                            else:
+                                data = {}
+
+                            if endpoint not in data:
+                                data[endpoint] = current_time
+                            
+                            async with aiofiles.open(file_path, 'w') as f:
+                                await f.write(json.dumps(data))
+                except ValueError:
+                    logger.error(f"Некорректный формат времени последнего подключения: {last_handshake_str}")
+
+        if os.path.exists(file_path):
+            async with aiofiles.open(file_path, 'r') as f:
+                data = json.loads(await f.read())
+            
+            sorted_connections = sorted(data.items(), key=lambda x: datetime.strptime(x[1], '%d.%m.%Y %H:%M'), reverse=True)
+            
+            text = f"Подключения пользователя {username} за последние 24 часа:\n\n"
+            for i, (ip, time) in enumerate(sorted_connections, 1):
+                connection_time = datetime.strptime(time, '%d.%m.%Y %H:%M')
+                isp_info = await get_isp_info(ip)
+                if datetime.now() - connection_time <= timedelta(days=1):
+                    text += f"{i}. {ip} ({isp_info}) - {connection_time}\n"
+        else:
+            text = f"История подключений пользователя {username} отсутствует."
+                
         keyboard = InlineKeyboardMarkup(row_width=2)
         keyboard.add(
             InlineKeyboardButton("Назад", callback_data=f"client_{username}"),
-            InlineKeyboardButton("Домой", callback_data="home")
-        )
-        await bot.edit_message_text(
-            chat_id=callback_query.message.chat.id,
-            message_id=callback_query.message.message_id,
-            text=connections_text,
-            parse_mode="Markdown",
-            reply_markup=keyboard
-        )
-    except Exception as e:
-        logger.error(f"Ошибка при получении данных о подключениях для пользователя {username}: {e}")
-        await callback_query.answer("Ошибка при получении данных о подключениях.", show_alert=True)
-        return
-    await cleanup_connection_data(username)
-    await callback_query.answer()
+            InlineKeyboardButton("Домой", callback_data="home"))
 
+        await callback_query.message.edit_text(text, reply_markup=keyboard)
+        await callback_query.answer()
+    except Exception as e:
+        logger.error(f"Ошибка при обработке подключений: {e}")
+        await callback_query.answer("Произошла ошибка при получении данных о подключениях.", show_alert=True) 
+        
 @dp.callback_query_handler(lambda c: c.data.startswith('ip_info_'))
 async def ip_info_callback(callback_query: types.CallbackQuery):
     _, username = callback_query.data.split('ip_info_', 1)

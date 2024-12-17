@@ -27,6 +27,31 @@ ENDPOINT="$2"
 WG_CONFIG_FILE="$3"
 DOCKER_CONTAINER="$4"
 
+CONFIG_FILE="files/setting.ini"
+if [ ! -f "$CONFIG_FILE" ]; then
+    echo "Error: Configuration file not found"
+    exit 1
+fi
+
+IS_REMOTE=$(awk -F "=" '/is_remote/ {print $2}' "$CONFIG_FILE" | tr -d ' ')
+if [ "$IS_REMOTE" = "true" ]; then
+    REMOTE_HOST=$(awk -F "=" '/remote_host/ {print $2}' "$CONFIG_FILE" | tr -d ' ')
+    REMOTE_USER=$(awk -F "=" '/remote_user/ {print $2}' "$CONFIG_FILE" | tr -d ' ')
+    REMOTE_PORT=$(awk -F "=" '/remote_port/ {print $2}' "$CONFIG_FILE" | tr -d ' ')
+    
+    remote_cmd() {
+        ssh -p "$REMOTE_PORT" "$REMOTE_USER@$REMOTE_HOST" "$1"
+    }
+    
+    docker_cmd() {
+        remote_cmd "docker $1"
+    }
+else
+    docker_cmd() {
+        docker $1
+    }
+fi
+
 if [[ ! "$CLIENT_NAME" =~ ^[a-zA-Z0-9_-]+$ ]]; then
     echo "Error: Invalid CLIENT_NAME. Only letters, numbers, underscores, and hyphens are allowed."
     exit 1
@@ -36,14 +61,28 @@ pwd=$(pwd)
 mkdir -p "$pwd/users/$CLIENT_NAME"
 mkdir -p "$pwd/files"
 
-key=$(docker exec -i $DOCKER_CONTAINER wg genkey)
-psk=$(docker exec -i $DOCKER_CONTAINER wg genpsk)
-
-SERVER_CONF_PATH="$pwd/files/server.conf"
-docker exec -i $DOCKER_CONTAINER cat $WG_CONFIG_FILE > "$SERVER_CONF_PATH"
+if [ "$IS_REMOTE" = "true" ]; then
+    key=$(docker_cmd "exec -i $DOCKER_CONTAINER wg genkey")
+    psk=$(docker_cmd "exec -i $DOCKER_CONTAINER wg genpsk")
+    
+    SERVER_CONF_PATH="$pwd/files/server.conf"
+    docker_cmd "exec -i $DOCKER_CONTAINER cat $WG_CONFIG_FILE" > "$SERVER_CONF_PATH"
+else
+    key=$(docker exec -i $DOCKER_CONTAINER wg genkey)
+    psk=$(docker exec -i $DOCKER_CONTAINER wg genpsk)
+    
+    SERVER_CONF_PATH="$pwd/files/server.conf"
+    docker exec -i $DOCKER_CONTAINER cat $WG_CONFIG_FILE > "$SERVER_CONF_PATH"
+fi
 
 SERVER_PRIVATE_KEY=$(awk '/^PrivateKey\s*=/ {print $3}' "$SERVER_CONF_PATH")
-SERVER_PUBLIC_KEY=$(echo "$SERVER_PRIVATE_KEY" | docker exec -i $DOCKER_CONTAINER wg pubkey)
+
+if [ "$IS_REMOTE" = "true" ]; then
+    SERVER_PUBLIC_KEY=$(echo "$SERVER_PRIVATE_KEY" | docker_cmd "exec -i $DOCKER_CONTAINER wg pubkey")
+else
+    SERVER_PUBLIC_KEY=$(echo "$SERVER_PRIVATE_KEY" | docker exec -i $DOCKER_CONTAINER wg pubkey)
+fi
+
 LISTEN_PORT=$(awk '/ListenPort\s*=/ {print $3}' "$SERVER_CONF_PATH")
 ADDITIONAL_PARAMS=$(awk '/^Jc\s*=|^Jmin\s*=|^Jmax\s*=|^S1\s*=|^S2\s*=|^H[1-4]\s*=/' "$SERVER_CONF_PATH")
 
@@ -60,7 +99,11 @@ fi
 CLIENT_IP="10.8.1.$octet/32"
 ALLOWED_IPS="$CLIENT_IP"
 
-CLIENT_PUBLIC_KEY=$(echo "$key" | docker exec -i $DOCKER_CONTAINER wg pubkey)
+if [ "$IS_REMOTE" = "true" ]; then
+    CLIENT_PUBLIC_KEY=$(echo "$key" | docker_cmd "exec -i $DOCKER_CONTAINER wg pubkey")
+else
+    CLIENT_PUBLIC_KEY=$(echo "$key" | docker exec -i $DOCKER_CONTAINER wg pubkey)
+fi
 
 cat << EOF >> "$SERVER_CONF_PATH"
 [Peer]
@@ -71,9 +114,15 @@ AllowedIPs = $ALLOWED_IPS
 
 EOF
 
-docker cp "$SERVER_CONF_PATH" $DOCKER_CONTAINER:$WG_CONFIG_FILE
-
-docker exec -i $DOCKER_CONTAINER sh -c "wg-quick down $WG_CONFIG_FILE && wg-quick up $WG_CONFIG_FILE"
+if [ "$IS_REMOTE" = "true" ]; then
+    scp -P "$REMOTE_PORT" "$SERVER_CONF_PATH" "$REMOTE_USER@$REMOTE_HOST:/tmp/server.conf"
+    remote_cmd "docker cp /tmp/server.conf $DOCKER_CONTAINER:$WG_CONFIG_FILE"
+    remote_cmd "rm /tmp/server.conf"
+    docker_cmd "exec -i $DOCKER_CONTAINER sh -c \"wg-quick down $WG_CONFIG_FILE && wg-quick up $WG_CONFIG_FILE\""
+else
+    docker cp "$SERVER_CONF_PATH" $DOCKER_CONTAINER:$WG_CONFIG_FILE
+    docker exec -i $DOCKER_CONTAINER sh -c "wg-quick down $WG_CONFIG_FILE && wg-quick up $WG_CONFIG_FILE"
+fi
 
 cat << EOF > "$pwd/users/$CLIENT_NAME/$CLIENT_NAME.conf"
 [Interface]
@@ -90,32 +139,43 @@ PersistentKeepalive = 25
 EOF
 
 CLIENTS_TABLE_PATH="$pwd/files/clientsTable"
-docker exec -i $DOCKER_CONTAINER cat /opt/amnezia/awg/clientsTable > "$CLIENTS_TABLE_PATH" || echo "[]" > "$CLIENTS_TABLE_PATH"
+
+if [ "$IS_REMOTE" = "true" ]; then
+    docker_cmd "exec -i $DOCKER_CONTAINER cat /opt/amnezia/awg/clientsTable" > "$CLIENTS_TABLE_PATH" || echo "[]" > "$CLIENTS_TABLE_PATH"
+else
+    docker exec -i $DOCKER_CONTAINER cat /opt/amnezia/awg/clientsTable > "$CLIENTS_TABLE_PATH" || echo "[]" > "$CLIENTS_TABLE_PATH"
+fi
 
 CREATION_DATE=$(date)
 if [ -f "$CLIENTS_TABLE_PATH" ]; then
     jq --arg clientId "$CLIENT_PUBLIC_KEY" \
-       --arg clientName "$CLIENT_NAME" \
-       --arg creationDate "$CREATION_DATE" \
-       '. += [{"clientId": $clientId, "userData": {"clientName": $clientName, "creationDate": $creationDate}}]' \
-       "$CLIENTS_TABLE_PATH" > "$CLIENTS_TABLE_PATH.tmp"
+    --arg clientName "$CLIENT_NAME" \
+    --arg creationDate "$CREATION_DATE" \
+    '. += [{"clientId": $clientId, "userData": {"clientName": $clientName, "creationDate": $creationDate}}]' \
+    "$CLIENTS_TABLE_PATH" > "$CLIENTS_TABLE_PATH.tmp"
     mv "$CLIENTS_TABLE_PATH.tmp" "$CLIENTS_TABLE_PATH"
 else
     jq -n --arg clientId "$CLIENT_PUBLIC_KEY" \
-          --arg clientName "$CLIENT_NAME" \
-          --arg creationDate "$CREATION_DATE" \
-          '[{"clientId": $clientId, "userData": {"clientName": $clientName, "creationDate": $creationDate}}]' \
-          > "$CLIENTS_TABLE_PATH"
+    --arg clientName "$CLIENT_NAME" \
+    --arg creationDate "$CREATION_DATE" \
+    '[{"clientId": $clientId, "userData": {"clientName": $clientName, "creationDate": $creationDate}}]' \
+    > "$CLIENTS_TABLE_PATH"
 fi
 
-docker cp "$CLIENTS_TABLE_PATH" $DOCKER_CONTAINER:/opt/amnezia/awg/clientsTable
+if [ "$IS_REMOTE" = "true" ]; then
+    scp -P "$REMOTE_PORT" "$CLIENTS_TABLE_PATH" "$REMOTE_USER@$REMOTE_HOST:/tmp/clientsTable"
+    remote_cmd "docker cp /tmp/clientsTable $DOCKER_CONTAINER:/opt/amnezia/awg/clientsTable"
+    remote_cmd "rm /tmp/clientsTable"
+else
+    docker cp "$CLIENTS_TABLE_PATH" $DOCKER_CONTAINER:/opt/amnezia/awg/clientsTable
+fi
 
 traffic_file="$pwd/users/$CLIENT_NAME/traffic.json"
 echo '{
-    "total_incoming": 0,
-    "total_outgoing": 0,
-    "last_incoming": 0,
-    "last_outgoing": 0
+"total_incoming": 0,
+"total_outgoing": 0,
+"last_incoming": 0,
+"last_outgoing": 0
 }' > "$traffic_file"
 
 echo "Client $CLIENT_NAME successfully added to WireGuard"

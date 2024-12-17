@@ -209,7 +209,7 @@ check_python() {
 }
 
 install_dependencies() {
-    run_with_spinner "Установка зависимостей" "sudo apt-get install qrencode jq net-tools iptables resolvconf git -y -qq"
+    run_with_spinner "Установка зависимостей" "sudo apt-get install jq net-tools iptables resolvconf git -y -qq"
 }
 
 install_and_configure_needrestart() {

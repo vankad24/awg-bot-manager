@@ -1117,22 +1117,38 @@ async def deactivate_user(client_name: str):
         asyncio.create_task(delete_message_after_delay(admin, sent_message.message_id, delay=15))
 
 async def check_environment():
+    setting = db.get_config()
     try:
-        cmd = "docker ps --filter 'name={}' --format '{{{{.Names}}}}'".format(DOCKER_CONTAINER)
-        container_names = subprocess.check_output(cmd, shell=True).decode().strip().split('\n')
-        if DOCKER_CONTAINER not in container_names:
-            logger.error(f"Контейнер Docker '{DOCKER_CONTAINER}' не найден. Необходима инициализация AmneziaVPN.")
-            return False
-    except subprocess.CalledProcessError as e:
-        logger.error(f"Ошибка при проверке Docker-контейнера: {e}")
+        if setting.get('is_remote') == 'true':
+            cmd = f"docker ps --filter 'name={DOCKER_CONTAINER}' --format '{{{{.Names}}}}'"
+            output, error = db.ssh_manager.execute_command(cmd)
+            if not output or DOCKER_CONTAINER not in output:
+                logger.error(f"Контейнер Docker '{DOCKER_CONTAINER}' не найден. Необходима инициализация AmneziaVPN.")
+                return False
+
+            cmd = f"docker exec {DOCKER_CONTAINER} test -f {WG_CONFIG_FILE}"
+            output, error = db.ssh_manager.execute_command(cmd)
+            if error and 'No such file' in error:
+                logger.error(f"Конфигурационный файл WireGuard '{WG_CONFIG_FILE}' не найден в контейнере '{DOCKER_CONTAINER}'.")
+                return False
+        else:
+            cmd = f"docker ps --filter 'name={DOCKER_CONTAINER}' --format '{{{{.Names}}}}'"
+            container_names = subprocess.check_output(cmd, shell=True).decode().strip().split('\n')
+            if DOCKER_CONTAINER not in container_names:
+                logger.error(f"Контейнер Docker '{DOCKER_CONTAINER}' не найден. Необходима инициализация AmneziaVPN.")
+                return False
+
+            cmd = f"docker exec {DOCKER_CONTAINER} test -f {WG_CONFIG_FILE}"
+            try:
+                subprocess.check_call(cmd, shell=True)
+            except subprocess.CalledProcessError:
+                logger.error(f"Конфигурационный файл WireGuard '{WG_CONFIG_FILE}' не найден в контейнере '{DOCKER_CONTAINER}'.")
+                return False
+
+        return True
+    except Exception as e:
+        logger.error(f"Ошибка при проверке окружения: {e}")
         return False
-    try:
-        cmd = f"docker exec {DOCKER_CONTAINER} test -f {WG_CONFIG_FILE}"
-        subprocess.check_call(cmd, shell=True)
-    except subprocess.CalledProcessError:
-        logger.error(f"Конфигурационный файл WireGuard '{WG_CONFIG_FILE}' не найден в контейнере '{DOCKER_CONTAINER}'. Необходима инициализация AmneziaVPN.")
-        return False
-    return True
 
 async def periodic_ensure_peer_names():
     db.ensure_peer_names()

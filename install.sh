@@ -8,7 +8,7 @@ RED=$'\033[0;31m'
 BLUE=$'\033[0;34m'
 NC=$'\033[0m'
 
-ENABLE_LOGS=false
+ENABLE_LOGS=true
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SCRIPT_NAME="$(basename "$0")"

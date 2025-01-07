@@ -27,22 +27,47 @@ from apscheduler.triggers.interval import IntervalTrigger
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-setting = db.get_config()
-bot_token = setting.get('bot_token')
-admin_id = setting.get('admin_id')
-wg_config_file = setting.get('wg_config_file')
-docker_container = setting.get('docker_container')
-endpoint = setting.get('endpoint')
+config = db.get_config()
+bot_token = config.get('bot_token')
+admin_id = config.get('admin_id')
 
-if not all([bot_token, admin_id, wg_config_file, docker_container, endpoint]):
-    logger.error("Некоторые обязательные настройки отсутствуют в конфигурационном файле.")
+if not all([bot_token, admin_id]):
+    logger.error("Отсутствуют обязательные настройки бота (bot_token или admin_id).")
     sys.exit(1)
+
+servers = db.load_servers()
+if not servers:
+    logger.warning("Не найдено ни одного сервера в конфигурации")
 
 bot = Bot(bot_token)
 admin = int(admin_id)
-WG_CONFIG_FILE = wg_config_file
-DOCKER_CONTAINER = docker_container
-ENDPOINT = endpoint
+
+current_server = None
+WG_CONFIG_FILE = None
+DOCKER_CONTAINER = None
+ENDPOINT = None
+
+def update_server_settings(server_id=None):
+    global current_server, WG_CONFIG_FILE, DOCKER_CONTAINER, ENDPOINT
+    if server_id:
+        servers = db.load_servers()
+        if server_id in servers:
+            server_config = servers[server_id]
+            WG_CONFIG_FILE = server_config.get('wg_config_file')
+            DOCKER_CONTAINER = server_config.get('docker_container')
+            ENDPOINT = server_config.get('endpoint')
+            current_server = server_id
+            logger.info(f"Настройки сервера {server_id} обновлены")
+            return True
+        else:
+            logger.error(f"Сервер {server_id} не найден")
+            return False
+    else:
+        WG_CONFIG_FILE = None
+        DOCKER_CONTAINER = None
+        ENDPOINT = None
+        current_server = None
+        return True
 
 class AdminMessageDeletionMiddleware(BaseMiddleware):
     async def on_process_message(self, message: types.Message, data: dict):
@@ -59,8 +84,11 @@ main_menu_markup = InlineKeyboardMarkup(row_width=1).add(
     InlineKeyboardButton("Добавить пользователя", callback_data="add_user"),
     InlineKeyboardButton("Получить конфигурацию пользователя", callback_data="get_config"),
     InlineKeyboardButton("Список клиентов", callback_data="list_users"),
-    InlineKeyboardButton("Создать бекап", callback_data="create_backup")
+    InlineKeyboardButton("Создать бекап", callback_data="create_backup"),
+    InlineKeyboardButton("Управление серверами", callback_data="manage_servers")
 )
+
+current_server = None
 
 user_main_messages = {}
 isp_cache = {}
@@ -204,12 +232,223 @@ async def handle_messages(message: types.Message):
     if message.chat.id != admin:
         await message.answer("У вас нет доступа к этому боту.")
         return
+    
     user_state = user_main_messages.get(admin, {}).get('state')
-    if user_state == 'waiting_for_user_name':
+    
+    if user_state == 'waiting_for_server_id':
+        server_id = message.text.strip()
+        if not all(c.isalnum() or c in "-_" for c in server_id):
+            main_chat_id = user_main_messages.get(admin, {}).get('chat_id')
+            main_message_id = user_main_messages.get(admin, {}).get('message_id')
+            if main_chat_id and main_message_id:
+                await bot.edit_message_text(
+                    chat_id=main_chat_id,
+                    message_id=main_message_id,
+                    text="Идентификатор сервера может содержать только буквы, цифры, дефисы и подчёркивания.\nВведите идентификатор нового сервера:",
+                    reply_markup=InlineKeyboardMarkup().add(
+                        InlineKeyboardButton("Отмена", callback_data="manage_servers")
+                    )
+                )
+            asyncio.create_task(delete_message_after_delay(message.chat.id, message.message_id, delay=5))
+            return
+        
+        user_main_messages[admin]['server_id'] = server_id
+        user_main_messages[admin]['state'] = 'waiting_for_server_host'
+        
+        main_chat_id = user_main_messages.get(admin, {}).get('chat_id')
+        main_message_id = user_main_messages.get(admin, {}).get('message_id')
+        if main_chat_id and main_message_id:
+            await bot.edit_message_text(
+                chat_id=main_chat_id,
+                message_id=main_message_id,
+                text="Введите IP-адрес сервера:",
+                reply_markup=InlineKeyboardMarkup().add(
+                    InlineKeyboardButton("Отмена", callback_data="manage_servers")
+                )
+            )
+        asyncio.create_task(delete_message_after_delay(message.chat.id, message.message_id, delay=5))
+        
+    elif user_state == 'waiting_for_server_host':
+        host = message.text.strip()
+        user_main_messages[admin]['host'] = host
+        user_main_messages[admin]['state'] = 'waiting_for_server_port'
+        
+        main_chat_id = user_main_messages.get(admin, {}).get('chat_id')
+        main_message_id = user_main_messages.get(admin, {}).get('message_id')
+        if main_chat_id and main_message_id:
+            await bot.edit_message_text(
+                chat_id=main_chat_id,
+                message_id=main_message_id,
+                text="Введите SSH порт (по умолчанию 22):",
+                reply_markup=InlineKeyboardMarkup().add(
+                    InlineKeyboardButton("Отмена", callback_data="manage_servers")
+                )
+            )
+        asyncio.create_task(delete_message_after_delay(message.chat.id, message.message_id, delay=5))
+        
+    elif user_state == 'waiting_for_server_port':
+        try:
+            port = int(message.text.strip() or "22")
+            user_main_messages[admin]['port'] = port
+            user_main_messages[admin]['state'] = 'waiting_for_server_username'
+            
+            main_chat_id = user_main_messages.get(admin, {}).get('chat_id')
+            main_message_id = user_main_messages.get(admin, {}).get('message_id')
+            if main_chat_id and main_message_id:
+                await bot.edit_message_text(
+                    chat_id=main_chat_id,
+                    message_id=main_message_id,
+                    text="Введите имя пользователя SSH:",
+                    reply_markup=InlineKeyboardMarkup().add(
+                        InlineKeyboardButton("Отмена", callback_data="manage_servers")
+                    )
+                )
+            asyncio.create_task(delete_message_after_delay(message.chat.id, message.message_id, delay=5))
+        except ValueError:
+            main_chat_id = user_main_messages.get(admin, {}).get('chat_id')
+            main_message_id = user_main_messages.get(admin, {}).get('message_id')
+            if main_chat_id and main_message_id:
+                await bot.edit_message_text(
+                    chat_id=main_chat_id,
+                    message_id=main_message_id,
+                    text="Порт должен быть числом.\nВведите SSH порт (по умолчанию 22):",
+                    reply_markup=InlineKeyboardMarkup().add(
+                        InlineKeyboardButton("Отмена", callback_data="manage_servers")
+                    )
+                )
+            asyncio.create_task(delete_message_after_delay(message.chat.id, message.message_id, delay=5))
+            
+    elif user_state == 'waiting_for_server_username':
+        username = message.text.strip()
+        user_main_messages[admin]['username'] = username
+        user_main_messages[admin]['state'] = 'waiting_for_auth_type'
+        
+        auth_markup = InlineKeyboardMarkup(row_width=2)
+        auth_markup.add(
+            InlineKeyboardButton("Пароль", callback_data="auth_password"),
+            InlineKeyboardButton("SSH ключ", callback_data="auth_key")
+        )
+        
+        main_chat_id = user_main_messages.get(admin, {}).get('chat_id')
+        main_message_id = user_main_messages.get(admin, {}).get('message_id')
+        if main_chat_id and main_message_id:
+            await bot.edit_message_text(
+                chat_id=main_chat_id,
+                message_id=main_message_id,
+                text="Выберите тип аутентификации:",
+                reply_markup=auth_markup
+            )
+        asyncio.create_task(delete_message_after_delay(message.chat.id, message.message_id, delay=5))
+        
+    elif user_state == 'waiting_for_password':
+        password = message.text.strip()
+        server_data = user_main_messages[admin]
+        
+        success = db.add_server(
+            server_data['server_id'],
+            server_data['host'],
+            server_data['port'],
+            server_data['username'],
+            'password',
+            password=password
+        )
+        
+        main_chat_id = user_main_messages.get(admin, {}).get('chat_id')
+        main_message_id = user_main_messages.get(admin, {}).get('message_id')
+        
+        if success:
+            if main_chat_id and main_message_id:
+                await bot.edit_message_text(
+                    chat_id=main_chat_id,
+                    message_id=main_message_id,
+                    text="Сервер успешно добавлен!",
+                    reply_markup=main_menu_markup
+                )
+            await asyncio.sleep(2)
+            await bot.edit_message_text(
+                chat_id=main_chat_id,
+                message_id=main_message_id,
+                text="Управление серверами:",
+                reply_markup=InlineKeyboardMarkup(row_width=2).add(
+                    *[InlineKeyboardButton(
+                        f"{'✅ ' if server == current_server else ''}{server}",
+                        callback_data=f"select_server_{server}"
+                    ) for server in db.get_server_list()],
+                    InlineKeyboardButton("Добавить сервер", callback_data="add_server"),
+                    InlineKeyboardButton("Удалить сервер", callback_data="delete_server"),
+                    InlineKeyboardButton("Домой", callback_data="home")
+                )
+            )
+        else:
+            if main_chat_id and main_message_id:
+                await bot.edit_message_text(
+                    chat_id=main_chat_id,
+                    message_id=main_message_id,
+                    text="Ошибка при добавлении сервера.",
+                    reply_markup=InlineKeyboardMarkup().add(
+                        InlineKeyboardButton("Назад", callback_data="manage_servers")
+                    )
+                )
+        
+        asyncio.create_task(delete_message_after_delay(message.chat.id, message.message_id, delay=5))
+            
+    elif user_state == 'waiting_for_key_path':
+        key_path = message.text.strip()
+        server_data = user_main_messages[admin]
+        
+        success = db.add_server(
+            server_data['server_id'],
+            server_data['host'],
+            server_data['port'],
+            server_data['username'],
+            'key',
+            key_path=key_path
+        )
+        
+        main_chat_id = user_main_messages.get(admin, {}).get('chat_id')
+        main_message_id = user_main_messages.get(admin, {}).get('message_id')
+        
+        if success:
+            if main_chat_id and main_message_id:
+                await bot.edit_message_text(
+                    chat_id=main_chat_id,
+                    message_id=main_message_id,
+                    text="Сервер успешно добавлен!",
+                    reply_markup=main_menu_markup
+                )
+            await asyncio.sleep(2)
+            await bot.edit_message_text(
+                chat_id=main_chat_id,
+                message_id=main_message_id,
+                text="Управление серверами:",
+                reply_markup=InlineKeyboardMarkup(row_width=2).add(
+                    *[InlineKeyboardButton(
+                        f"{'✅ ' if server == current_server else ''}{server}",
+                        callback_data=f"select_server_{server}"
+                    ) for server in db.get_server_list()],
+                    InlineKeyboardButton("Добавить сервер", callback_data="add_server"),
+                    InlineKeyboardButton("Удалить сервер", callback_data="delete_server"),
+                    InlineKeyboardButton("Домой", callback_data="home")
+                )
+            )
+        else:
+            if main_chat_id and main_message_id:
+                await bot.edit_message_text(
+                    chat_id=main_chat_id,
+                    message_id=main_message_id,
+                    text="Ошибка при добавлении сервера.",
+                    reply_markup=InlineKeyboardMarkup().add(
+                        InlineKeyboardButton("Назад", callback_data="manage_servers")
+                    )
+                )
+        
+        asyncio.create_task(delete_message_after_delay(message.chat.id, message.message_id, delay=5))
+            
+    elif user_state == 'waiting_for_user_name':
         user_name = message.text.strip()
         if not all(c.isalnum() or c in "-_" for c in user_name):
             await message.reply("Имя пользователя может содержать только буквы, цифры, дефисы и подчёркивания.")
-            asyncio.create_task(delete_message_after_delay(sent_message.chat.id, sent_message.message_id, delay=2))
+            asyncio.create_task(delete_message_after_delay(sent_message.chat.id, sent_message.message_id, delay=5))
             return
         user_main_messages[admin]['client_name'] = user_name
         user_main_messages[admin]['state'] = 'waiting_for_duration'
@@ -236,12 +475,16 @@ async def handle_messages(message: types.Message):
             await message.answer("Ошибка: главное сообщение не найдено.")
     else:
         await message.reply("Неизвестная команда или действие.")
-        asyncio.create_task(delete_message_after_delay(sent_message.chat.id, sent_message.message_id, delay=2))
+        asyncio.create_task(delete_message_after_delay(sent_message.chat.id, sent_message.message_id, delay=5))
 
 @dp.callback_query_handler(lambda c: c.data.startswith('add_user'))
 async def prompt_for_user_name(callback_query: types.CallbackQuery):
     if callback_query.from_user.id != admin:
         await callback_query.answer("У вас нет прав для выполнения этого действия.", show_alert=True)
+        return
+        
+    if not current_server:
+        await callback_query.answer("Сначала выберите сервер в разделе 'Управление серверами'", show_alert=True)
         return
     main_chat_id = user_main_messages.get(admin, {}).get('chat_id')
     main_message_id = user_main_messages.get(admin, {}).get('message_id')
@@ -337,7 +580,7 @@ async def set_traffic_limit(callback_query: types.CallbackQuery):
         duration = None
     if duration:
         expiration_time = datetime.now(pytz.UTC) + duration
-        db.set_user_expiration(client_name, expiration_time, traffic_limit)
+        db.set_user_expiration(client_name, expiration_time, traffic_limit, server_id=current_server)
         scheduler.add_job(
             deactivate_user,
             trigger=DateTrigger(run_date=expiration_time),
@@ -346,13 +589,13 @@ async def set_traffic_limit(callback_query: types.CallbackQuery):
         )
         confirmation_text = f"Пользователь **{client_name}** добавлен. \nКонфигурация истечет через **{duration_choice}**."
     else:
-        db.set_user_expiration(client_name, None, traffic_limit)
+        db.set_user_expiration(client_name, None, traffic_limit, server_id=current_server)
         confirmation_text = f"Пользователь **{client_name}** добавлен с неограниченным временем действия."
     if traffic_limit != "Неограниченно":
         confirmation_text += f"\nЛимит трафика: **{traffic_limit}**."
     else:
         confirmation_text += f"\nЛимит трафика: **♾️ Неограниченно**."
-    success = db.root_add(client_name, ipv6=False)
+    success = db.root_add(client_name, server_id=current_server, ipv6=False)
     if success:
         try:
             conf_path = os.path.join('users', client_name, f'{client_name}.conf')
@@ -423,24 +666,32 @@ async def set_traffic_limit(callback_query: types.CallbackQuery):
 
 @dp.callback_query_handler(lambda c: c.data.startswith('client_'))
 async def client_selected_callback(callback_query: types.CallbackQuery):
+    if callback_query.from_user.id != admin:
+        await callback_query.answer("У вас нет прав для выполнения этого действия.", show_alert=True)
+        return
+        
+    if not current_server:
+        await callback_query.answer("Сначала выберите сервер в разделе 'Управление серверами'", show_alert=True)
+        return
+        
     _, username = callback_query.data.split('client_', 1)
     username = username.strip()
-    clients = db.get_client_list()
+    clients = db.get_client_list(server_id=current_server)
     client_info = next((c for c in clients if c[0] == username), None)
     if not client_info:
         await callback_query.answer("Ошибка: пользователь не найден.", show_alert=True)
         return
 
-    expiration_time = db.get_user_expiration(username)
-    traffic_limit = db.get_user_traffic_limit(username)
-    status = "🔴 Офлайн"
+    expiration_time = db.get_user_expiration(username, server_id=current_server)
+    traffic_limit = db.get_user_traffic_limit(username, server_id=current_server)
+    status = "🔴 Offline"
     incoming_traffic = "↓—"
     outgoing_traffic = "↑—"
     ipv4_address = "—"
     total_bytes = 0
     formatted_total = "0.00B"
 
-    active_clients = db.get_active_list()
+    active_clients = db.get_active_list(server_id=current_server)
     active_info = None
     for ac in active_clients:
         if isinstance(ac, dict) and ac.get('name') == username:
@@ -458,9 +709,9 @@ async def client_selected_callback(callback_query: types.CallbackQuery):
                 if last_handshake_dt:
                     delta = datetime.now(pytz.UTC) - last_handshake_dt
                     if delta <= timedelta(minutes=1):
-                        status = "🟢 Онлайн"
+                        status = "🟢 Online"
                     else:
-                        status = "🔴 Офлайн"
+                        status = "🔴 Offline"
 
                 transfer = active_info.get('transfer', '0/0')
                 incoming_bytes, outgoing_bytes = parse_transfer(transfer)
@@ -481,7 +732,7 @@ async def client_selected_callback(callback_query: types.CallbackQuery):
                         return
             except ValueError:
                 logger.error(f"Некорректный формат даты для пользователя {username}: {last_handshake_str}")
-                status = "🔴 Офлайн"
+                status = "🔴 Offline"
     else:
         traffic_data = await read_traffic(username)
         total_bytes = traffic_data.get('total_incoming', 0) + traffic_data.get('total_outgoing', 0)
@@ -562,13 +813,17 @@ async def list_users_callback(callback_query: types.CallbackQuery):
     if callback_query.from_user.id != admin:
         await callback_query.answer("У вас нет прав для выполнения этого действия.", show_alert=True)
         return
+        
+    if not current_server:
+        await callback_query.answer("Сначала выберите сервер в разделе 'Управление серверами'", show_alert=True)
+        return
 
-    clients = db.get_client_list()
+    clients = db.get_client_list(server_id=current_server)
     if not clients:
         await callback_query.answer("Список пользователей пуст.", show_alert=True)
         return
 
-    active_clients = db.get_active_list()
+    active_clients = db.get_active_list(server_id=current_server)
     active_clients_dict = {}
     for client in active_clients:
         if isinstance(client, dict):
@@ -647,6 +902,14 @@ async def list_users_callback(callback_query: types.CallbackQuery):
 
 @dp.callback_query_handler(lambda c: c.data.startswith('connections_'))
 async def client_connections_callback(callback_query: types.CallbackQuery):
+    if callback_query.from_user.id != admin:
+        await callback_query.answer("У вас нет прав для выполнения этого действия.", show_alert=True)
+        return
+        
+    if not current_server:
+        await callback_query.answer("Сначала выберите сервер в разделе 'Управление серверами'", show_alert=True)
+        return
+        
     _, username = callback_query.data.split('connections_', 1)
     username = username.strip()
     file_path = os.path.join('files', 'connections', f'{username}_ip.json')
@@ -654,7 +917,7 @@ async def client_connections_callback(callback_query: types.CallbackQuery):
     os.makedirs(os.path.join('files', 'connections'), exist_ok=True)
     
     try:
-        active_clients = db.get_active_list()
+        active_clients = db.get_active_list(server_id=current_server)
         active_info = next((client for client in active_clients if isinstance(client, dict) and client.get('name') == username), None)
         
         if active_info and active_info.get('endpoint'):
@@ -710,13 +973,21 @@ async def client_connections_callback(callback_query: types.CallbackQuery):
         
 @dp.callback_query_handler(lambda c: c.data.startswith('ip_info_'))
 async def ip_info_callback(callback_query: types.CallbackQuery):
+    if callback_query.from_user.id != admin:
+        await callback_query.answer("У вас нет прав для выполнения этого действия.", show_alert=True)
+        return
+        
+    if not current_server:
+        await callback_query.answer("Сначала выберите сервер в разделе 'Управление серверами'", show_alert=True)
+        return
+        
     _, username = callback_query.data.split('ip_info_', 1)
     username = username.strip()
-    active_clients = db.get_active_list()
-    active_info = next((ac for ac in active_clients if ac[0] == username), None)
+    active_clients = db.get_active_list(server_id=current_server)
+    active_info = next((ac for ac in active_clients if ac.get('name') == username), None)
     if active_info:
-        endpoint = active_info[3]
-        ip_address = endpoint.split(':')[0]
+        endpoint = active_info.get('endpoint', '')
+        ip_address = endpoint.split(':')[0] if endpoint else None
     else:
         await callback_query.answer("Нет информации о подключении пользователя.", show_alert=True)
         return
@@ -766,10 +1037,18 @@ async def ip_info_callback(callback_query: types.CallbackQuery):
 
 @dp.callback_query_handler(lambda c: c.data.startswith('delete_user_'))
 async def client_delete_callback(callback_query: types.CallbackQuery):
+    if callback_query.from_user.id != admin:
+        await callback_query.answer("У вас нет прав для выполнения этого действия.", show_alert=True)
+        return
+        
+    if not current_server:
+        await callback_query.answer("Сначала выберите сервер в разделе 'Управление серверами'", show_alert=True)
+        return
+        
     username = callback_query.data.split('delete_user_')[1]
-    success = db.deactive_user_db(username)
+    success = db.deactive_user_db(username, server_id=current_server)
     if success:
-        db.remove_user_expiration(username)
+        db.remove_user_expiration(username, server_id=current_server)
         try:
             scheduler.remove_job(job_id=username)
         except:
@@ -780,6 +1059,13 @@ async def client_delete_callback(callback_query: types.CallbackQuery):
                 shutil.rmtree(user_dir)
         except Exception as e:
             logger.error(f"Ошибка при удалении директории для пользователя {username}: {e}")
+            
+        connections_file = os.path.join('files', 'connections', f'{username}_ip.json')
+        try:
+            if os.path.exists(connections_file):
+                os.remove(connections_file)
+        except Exception as e:
+            logger.error(f"Ошибка при удалении файла подключений для пользователя {username}: {e}")
         confirmation_text = f"Пользователь **{username}** успешно удален."
     else:
         confirmation_text = f"Не удалось удалить пользователя **{username}**."
@@ -796,6 +1082,174 @@ async def client_delete_callback(callback_query: types.CallbackQuery):
     else:
         await callback_query.answer("Ошибка: главное сообщение не найдено.", show_alert=True)
         return
+    await callback_query.answer()
+
+@dp.callback_query_handler(lambda c: c.data == 'manage_servers')
+async def manage_servers_callback(callback_query: types.CallbackQuery):
+    if callback_query.from_user.id != admin:
+        await callback_query.answer("У вас нет прав для выполнения этого действия.", show_alert=True)
+        return
+    
+    servers = db.get_server_list()
+    keyboard = InlineKeyboardMarkup(row_width=2)
+    
+    for server in servers:
+        keyboard.insert(InlineKeyboardButton(
+            f"{'✅ ' if server == current_server else ''}{server}",
+            callback_data=f"select_server_{server}"
+        ))
+    
+    keyboard.add(InlineKeyboardButton("Добавить сервер", callback_data="add_server"))
+    if servers:
+        keyboard.add(InlineKeyboardButton("Удалить сервер", callback_data="delete_server"))
+    keyboard.add(InlineKeyboardButton("Домой", callback_data="home"))
+    
+    await bot.edit_message_text(
+        chat_id=callback_query.message.chat.id,
+        message_id=callback_query.message.message_id,
+        text="Управление серверами:",
+        reply_markup=keyboard
+    )
+    await callback_query.answer()
+
+@dp.callback_query_handler(lambda c: c.data.startswith('select_server_'))
+async def select_server_callback(callback_query: types.CallbackQuery):
+    if callback_query.from_user.id != admin:
+        await callback_query.answer("У вас нет прав для выполнения этого действия.", show_alert=True)
+        return
+    
+    server_id = callback_query.data.split('select_server_')[1]
+    
+    if update_server_settings(server_id):
+        await callback_query.answer(f"Выбран сервер: {server_id}")
+        await manage_servers_callback(callback_query)
+    else:
+        await callback_query.answer("Ошибка при выборе сервера", show_alert=True)
+
+@dp.callback_query_handler(lambda c: c.data in ['auth_password', 'auth_key'])
+async def auth_type_callback(callback_query: types.CallbackQuery):
+    if callback_query.from_user.id != admin:
+        await callback_query.answer("У вас нет прав для выполнения этого действия.", show_alert=True)
+        return
+    
+    auth_type = callback_query.data.split('_')[1]
+    user_main_messages[admin]['auth_type'] = auth_type
+    
+    if auth_type == 'password':
+        user_main_messages[admin]['state'] = 'waiting_for_password'
+        user_main_messages[admin]['auth_message_id'] = callback_query.message.message_id
+        await bot.edit_message_text(
+            chat_id=callback_query.message.chat.id,
+            message_id=callback_query.message.message_id,
+            text="Введите пароль SSH:",
+            reply_markup=InlineKeyboardMarkup().add(
+                InlineKeyboardButton("Отмена", callback_data="manage_servers")
+            )
+        )
+    else:
+        user_main_messages[admin]['state'] = 'waiting_for_key_path'
+        user_main_messages[admin]['auth_message_id'] = callback_query.message.message_id
+        await bot.edit_message_text(
+            chat_id=callback_query.message.chat.id,
+            message_id=callback_query.message.message_id,
+            text="Введите путь до приватного SSH-ключа (например /home/user/.ssh/id_rsa):",
+            reply_markup=InlineKeyboardMarkup().add(
+                InlineKeyboardButton("Отмена", callback_data="manage_servers")
+            )
+        )
+    await callback_query.answer()
+
+@dp.callback_query_handler(lambda c: c.data == 'delete_server')
+async def delete_server_callback(callback_query: types.CallbackQuery):
+    if callback_query.from_user.id != admin:
+        await callback_query.answer("У вас нет прав для выполнения этого действия.", show_alert=True)
+        return
+    
+    servers = db.get_server_list()
+    keyboard = InlineKeyboardMarkup(row_width=2)
+    
+    for server in servers:
+        keyboard.insert(InlineKeyboardButton(
+            f"🗑 {server}",
+            callback_data=f"confirm_delete_server_{server}"
+        ))
+    
+    keyboard.add(InlineKeyboardButton("Отмена", callback_data="manage_servers"))
+    
+    await bot.edit_message_text(
+        chat_id=callback_query.message.chat.id,
+        message_id=callback_query.message.message_id,
+        text="Выберите сервер для удаления.\n\n*ВНИМАНИЕ*: При удалении сервера будут удалены все его пользователи и конфигурации!",
+        parse_mode="Markdown",
+        reply_markup=keyboard
+    )
+    await callback_query.answer()
+
+@dp.callback_query_handler(lambda c: c.data.startswith('confirm_delete_server_'))
+async def confirm_delete_server_callback(callback_query: types.CallbackQuery):
+    if callback_query.from_user.id != admin:
+        await callback_query.answer("У вас нет прав для выполнения этого действия.", show_alert=True)
+        return
+    
+    server_id = callback_query.data.split('confirm_delete_server_')[1]
+    keyboard = InlineKeyboardMarkup(row_width=2)
+    keyboard.add(
+        InlineKeyboardButton("✅ Да, удалить", callback_data=f"delete_server_confirmed_{server_id}"),
+        InlineKeyboardButton("❌ Отмена", callback_data="manage_servers")
+    )
+    
+    await bot.edit_message_text(
+        chat_id=callback_query.message.chat.id,
+        message_id=callback_query.message.message_id,
+        text=f"⚠️ Вы уверены, что хотите удалить сервер *{server_id}*?\n\nЭто действие нельзя отменить!",
+        parse_mode="Markdown",
+        reply_markup=keyboard
+    )
+    await callback_query.answer()
+
+@dp.callback_query_handler(lambda c: c.data.startswith('delete_server_confirmed_'))
+async def delete_server_confirmed_callback(callback_query: types.CallbackQuery):
+    if callback_query.from_user.id != admin:
+        await callback_query.answer("У вас нет прав для выполнения этого действия.", show_alert=True)
+        return
+    
+    server_id = callback_query.data.split('delete_server_confirmed_')[1]
+    
+    if server_id == current_server:
+        update_server_settings(None)
+    
+    success = db.remove_server(server_id)
+    
+    if success:
+        await callback_query.answer("Сервер успешно удален", show_alert=True)
+    else:
+        await callback_query.answer("Ошибка при удалении сервера", show_alert=True)
+    
+    await manage_servers_callback(callback_query)
+
+@dp.callback_query_handler(lambda c: c.data == 'add_server')
+async def add_server_callback(callback_query: types.CallbackQuery):
+    if callback_query.from_user.id != admin:
+        await callback_query.answer("У вас нет прав для выполнения этого действия.", show_alert=True)
+        return
+    
+    main_chat_id = user_main_messages.get(admin, {}).get('chat_id')
+    main_message_id = user_main_messages.get(admin, {}).get('message_id')
+    
+    if main_chat_id and main_message_id:
+        user_main_messages[admin]['state'] = 'waiting_for_server_id'
+        await bot.edit_message_text(
+            chat_id=main_chat_id,
+            message_id=main_message_id,
+            text="Введите идентификатор нового сервера:",
+            reply_markup=InlineKeyboardMarkup().add(
+                InlineKeyboardButton("Отмена", callback_data="manage_servers")
+            )
+        )
+    else:
+        await callback_query.answer("Ошибка: главное сообщение не найдено.", show_alert=True)
+        return
+    
     await callback_query.answer()
 
 @dp.callback_query_handler(lambda c: c.data.startswith('home'))
@@ -838,7 +1292,11 @@ async def list_users_for_config(callback_query: types.CallbackQuery):
     if callback_query.from_user.id != admin:
         await callback_query.answer("У вас нет прав для выполнения этого действия.", show_alert=True)
         return
-    clients = db.get_client_list()
+        
+    if not current_server:
+        await callback_query.answer("Сначала выберите сервер в разделе 'Управление серверами'", show_alert=True)
+        return
+    clients = db.get_client_list(server_id=current_server)
     if not clients:
         await callback_query.answer("Список пользователей пуст.", show_alert=True)
         return
@@ -869,6 +1327,10 @@ async def list_users_for_config(callback_query: types.CallbackQuery):
 async def send_user_config(callback_query: types.CallbackQuery):
     if callback_query.from_user.id != admin:
         await callback_query.answer("У вас нет прав для выполнения этого действия.", show_alert=True)
+        return
+        
+    if not current_server:
+        await callback_query.answer("Сначала выберите сервер в разделе 'Управление серверами'", show_alert=True)
         return
     _, username = callback_query.data.split('send_config_', 1)
     username = username.strip()
@@ -935,6 +1397,10 @@ async def send_user_config(callback_query: types.CallbackQuery):
 async def create_backup_callback(callback_query: types.CallbackQuery):
     if callback_query.from_user.id != admin:
         await callback_query.answer("У вас нет прав для выполнения этого действия.", show_alert=True)
+        return
+        
+    if not current_server:
+        await callback_query.answer("Сначала выберите сервер в разделе 'Управление серверами'", show_alert=True)
         return
     date_str = datetime.now().strftime('%Y-%m-%d')
     backup_filename = f"backup_{date_str}.zip"
@@ -1006,8 +1472,8 @@ def parse_transfer(transfer_str):
 def humanize_bytes(bytes_value):
     return humanize.naturalsize(bytes_value, binary=False)
 
-async def read_traffic(username):
-    traffic_file = os.path.join('users', username, 'traffic.json')
+async def read_traffic(username, server_id='default'):
+    traffic_file = os.path.join('users', username, f'traffic_{server_id}.json')
     os.makedirs(os.path.dirname(traffic_file), exist_ok=True)
     if not os.path.exists(traffic_file):
         traffic_data = {
@@ -1037,8 +1503,8 @@ async def read_traffic(username):
                     await f_write.write(json.dumps(traffic_data))
                 return traffic_data
 
-async def update_traffic(username, incoming_bytes, outgoing_bytes):
-    traffic_data = await read_traffic(username)
+async def update_traffic(username, incoming_bytes, outgoing_bytes, server_id='default'):
+    traffic_data = await read_traffic(username, server_id)
     delta_incoming = incoming_bytes - traffic_data.get('last_incoming', 0)
     delta_outgoing = outgoing_bytes - traffic_data.get('last_outgoing', 0)
     if delta_incoming < 0:
@@ -1049,21 +1515,25 @@ async def update_traffic(username, incoming_bytes, outgoing_bytes):
     traffic_data['total_outgoing'] += delta_outgoing
     traffic_data['last_incoming'] = incoming_bytes
     traffic_data['last_outgoing'] = outgoing_bytes
-    traffic_file = os.path.join('users', username, 'traffic.json')
+    traffic_file = os.path.join('users', username, f'traffic_{server_id}.json')
     async with aiofiles.open(traffic_file, 'w') as f:
         await f.write(json.dumps(traffic_data))
     return traffic_data
 
 async def update_all_clients_traffic():
-    logger.info("Начало обновления трафика для всех клиентов.")
-    active_clients = db.get_active_list()
+    if not current_server:
+        logger.info("Сервер не выбран, пропуск обновления трафика")
+        return
+        
+    logger.info(f"Начало обновления трафика для всех клиентов на сервере {current_server}")
+    active_clients = db.get_active_list(server_id=current_server)
     for client in active_clients:
-        username = client[0]
-        transfer = client[2]
+        username = client.get('name')
+        transfer = client.get('transfer', '0/0')
         incoming_bytes, outgoing_bytes = parse_transfer(transfer)
-        traffic_data = await update_traffic(username, incoming_bytes, outgoing_bytes)
+        traffic_data = await update_traffic(username, incoming_bytes, outgoing_bytes, current_server)
         logger.info(f"Обновлён трафик для пользователя {username}: Входящий {traffic_data['total_incoming']} B, Исходящий {traffic_data['total_outgoing']} B")
-        traffic_limit = db.get_user_traffic_limit(username)
+        traffic_limit = db.get_user_traffic_limit(username, server_id=current_server)
         if traffic_limit != "Неограниченно":
             limit_bytes = parse_traffic_limit(traffic_limit)
             total_bytes = traffic_data.get('total_incoming', 0) + traffic_data.get('total_outgoing', 0)
@@ -1096,7 +1566,7 @@ async def generate_vpn_key(conf_path: str) -> str:
         return ""
 
 async def deactivate_user(client_name: str):
-    success = db.deactive_user_db(client_name)
+    success = db.deactive_user_db(client_name, server_id=current_server)
     if success:
         db.remove_user_expiration(client_name)
         try:
@@ -1109,6 +1579,13 @@ async def deactivate_user(client_name: str):
                 shutil.rmtree(user_dir)
         except Exception as e:
             logger.error(f"Ошибка при удалении директории для пользователя {client_name}: {e}")
+            
+        connections_file = os.path.join('files', 'connections', f'{client_name}_ip.json')
+        try:
+            if os.path.exists(connections_file):
+                os.remove(connections_file)
+        except Exception as e:
+            logger.error(f"Ошибка при удалении файла подключений для пользователя {client_name}: {e}")
         confirmation_text = f"Конфигурация пользователя **{client_name}** была деактивирована из-за превышения лимита трафика."
         sent_message = await bot.send_message(admin, confirmation_text, parse_mode="Markdown", disable_notification=True)
         asyncio.create_task(delete_message_after_delay(admin, sent_message.message_id, delay=15))
@@ -1117,17 +1594,31 @@ async def deactivate_user(client_name: str):
         asyncio.create_task(delete_message_after_delay(admin, sent_message.message_id, delay=15))
 
 async def check_environment():
-    setting = db.get_config()
+    if not current_server:
+        logger.error("Сервер не выбран")
+        return False
+        
+    servers = db.load_servers()
+    if current_server not in servers:
+        logger.error(f"Сервер {current_server} не найден в конфигурации")
+        return False
+        
+    server_config = servers[current_server]
     try:
-        if setting.get('is_remote') == 'true':
+        if server_config.get('is_remote') == 'true':
+            ssh = db.SSHManager(current_server)
+            if not ssh.connect():
+                logger.error("Не удалось установить SSH соединение")
+                return False
+                
             cmd = f"docker ps --filter 'name={DOCKER_CONTAINER}' --format '{{{{.Names}}}}'"
-            output, error = db.ssh_manager.execute_command(cmd)
+            output, error = ssh.execute_command(cmd)
             if not output or DOCKER_CONTAINER not in output:
                 logger.error(f"Контейнер Docker '{DOCKER_CONTAINER}' не найден. Необходима инициализация AmneziaVPN.")
                 return False
 
             cmd = f"docker exec {DOCKER_CONTAINER} test -f {WG_CONFIG_FILE}"
-            output, error = db.ssh_manager.execute_command(cmd)
+            output, error = ssh.execute_command(cmd)
             if error and 'No such file' in error:
                 logger.error(f"Конфигурационный файл WireGuard '{WG_CONFIG_FILE}' не найден в контейнере '{DOCKER_CONTAINER}'.")
                 return False
@@ -1151,12 +1642,29 @@ async def check_environment():
         return False
 
 async def periodic_ensure_peer_names():
-    db.ensure_peer_names()
+    db.ensure_peer_names(server_id=current_server)
 
 async def on_startup(dp):
     os.makedirs('files/connections', exist_ok=True)
     os.makedirs('users', exist_ok=True)
     await load_isp_cache_task()
+    
+    global current_server
+    if not current_server:
+        servers = db.get_server_list()
+        if servers:
+            current_server = servers[0]
+            if update_server_settings(current_server):
+                logger.info(f"Выбран сервер по умолчанию: {current_server}")
+            else:
+                logger.error(f"Ошибка при инициализации сервера по умолчанию: {current_server}")
+                await bot.send_message(admin, "Ошибка при инициализации сервера. Проверьте настройки в разделе 'Управление серверами'")
+                return
+        else:
+            logger.error("Не найдено ни одного сервера")
+            await bot.send_message(admin, "Не найдено ни одного сервера. Добавьте сервер через меню 'Управление серверами'")
+            return
+    
     environment_ok = await check_environment()
     if not environment_ok:
         logger.error("Необходимо инициализировать AmneziaVPN перед запуском бота.")
@@ -1168,7 +1676,7 @@ async def on_startup(dp):
         scheduler.add_job(periodic_ensure_peer_names, IntervalTrigger(minutes=1))
         scheduler.start()
         logger.info("Планировщик запущен для обновления трафика каждые 5 минут.")
-    users = db.get_users_with_expiration()
+    users = db.get_users_with_expiration(server_id=current_server)
     for user in users:
         client_name, expiration_time, traffic_limit = user
         if expiration_time:

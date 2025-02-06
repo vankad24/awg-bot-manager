@@ -16,6 +16,7 @@ import humanize
 import shutil
 from aiogram import Bot, types
 from aiogram.dispatcher import Dispatcher
+from aiogram.utils import exceptions as aiogram_exceptions
 from aiogram.dispatcher.middlewares import BaseMiddleware
 from aiogram.utils import executor
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
@@ -82,7 +83,6 @@ dp.middleware.setup(AdminMessageDeletionMiddleware())
 
 main_menu_markup = InlineKeyboardMarkup(row_width=1).add(
     InlineKeyboardButton("Добавить пользователя", callback_data="add_user"),
-    InlineKeyboardButton("Получить конфигурацию пользователя", callback_data="get_config"),
     InlineKeyboardButton("Список клиентов", callback_data="list_users"),
     InlineKeyboardButton("Создать бекап", callback_data="create_backup"),
     InlineKeyboardButton("Управление серверами", callback_data="manage_servers")
@@ -777,7 +777,8 @@ async def client_selected_callback(callback_query: types.CallbackQuery):
     keyboard = InlineKeyboardMarkup(row_width=2)
     keyboard.add(
         InlineKeyboardButton("IP info", callback_data=f"ip_info_{username}"),
-        InlineKeyboardButton("Подключения", callback_data=f"connections_{username}")
+        InlineKeyboardButton("Подключения", callback_data=f"connections_{username}"),
+        InlineKeyboardButton("Получить конфигурацию", callback_data=f"send_config_{username}")
     )
     keyboard.add(
         InlineKeyboardButton("Удалить", callback_data=f"delete_user_{username}")
@@ -1287,42 +1288,6 @@ async def return_home(callback_query: types.CallbackQuery):
             pass
     await callback_query.answer()
 
-@dp.callback_query_handler(lambda c: c.data.startswith('get_config'))
-async def list_users_for_config(callback_query: types.CallbackQuery):
-    if callback_query.from_user.id != admin:
-        await callback_query.answer("У вас нет прав для выполнения этого действия.", show_alert=True)
-        return
-        
-    if not current_server:
-        await callback_query.answer("Сначала выберите сервер в разделе 'Управление серверами'", show_alert=True)
-        return
-    clients = db.get_client_list(server_id=current_server)
-    if not clients:
-        await callback_query.answer("Список пользователей пуст.", show_alert=True)
-        return
-    keyboard = InlineKeyboardMarkup(row_width=2)
-    for client in clients:
-        username = client[0]
-        keyboard.insert(InlineKeyboardButton(username, callback_data=f"send_config_{username}"))
-    keyboard.add(InlineKeyboardButton("Домой", callback_data="home"))
-    main_chat_id = user_main_messages.get(admin, {}).get('chat_id')
-    main_message_id = user_main_messages.get(admin, {}).get('message_id')
-    if main_chat_id and main_message_id:
-        await bot.edit_message_text(
-            chat_id=main_chat_id,
-            message_id=main_message_id,
-            text="Выберите пользователя для получения конфигурации:",
-            reply_markup=keyboard
-        )
-    else:
-        sent_message = await callback_query.message.reply("Выберите пользователя для получения конфигурации:", reply_markup=keyboard)
-        user_main_messages[admin] = {'chat_id': sent_message.chat.id, 'message_id': sent_message.message_id}
-        try:
-            await bot.pin_chat_message(chat_id=sent_message.chat.id, message_id=sent_message.message_id, disable_notification=True)
-        except:
-            pass
-    await callback_query.answer()
-
 @dp.callback_query_handler(lambda c: c.data.startswith('send_config_'))
 async def send_user_config(callback_query: types.CallbackQuery):
     if callback_query.from_user.id != admin:
@@ -1391,6 +1356,113 @@ async def send_user_config(callback_query: types.CallbackQuery):
         asyncio.create_task(delete_message_after_delay(admin, sent_confirmation.message_id, delay=15))
     for message_id in sent_messages:
         asyncio.create_task(delete_message_after_delay(admin, message_id, delay=15))
+        
+    clients = db.get_client_list(server_id=current_server)
+    client_info = next((c for c in clients if c[0] == username), None)
+    
+    if client_info:
+        expiration_time = db.get_user_expiration(username, server_id=current_server)
+        traffic_limit = db.get_user_traffic_limit(username, server_id=current_server)
+        status = "🔴 Offline"
+        incoming_traffic = "↓—"
+        outgoing_traffic = "↑—"
+        ipv4_address = "—"
+        total_bytes = 0
+        formatted_total = "0.00B"
+
+        active_clients = db.get_active_list(server_id=current_server)
+        active_info = None
+        for ac in active_clients:
+            if isinstance(ac, dict) and ac.get('name') == username:
+                active_info = ac
+                break
+            elif isinstance(ac, (list, tuple)) and ac[0] == username:
+                active_info = {'name': ac[0], 'last_handshake': ac.get(1, 'never'), 'transfer': ac.get(2, '0/0')}
+                break
+
+        if active_info:
+            last_handshake_str = active_info.get('last_handshake', 'never')
+            if last_handshake_str.lower() not in ['never', 'нет данных', '-']:
+                try:
+                    last_handshake_dt = parse_relative_time(last_handshake_str)
+                    if last_handshake_dt:
+                        delta = datetime.now(pytz.UTC) - last_handshake_dt
+                        if delta <= timedelta(minutes=1):
+                            status = "🟢 Online"
+                        else:
+                            status = "🔴 Offline"
+
+                    transfer = active_info.get('transfer', '0/0')
+                    incoming_bytes, outgoing_bytes = parse_transfer(transfer)
+                    incoming_traffic = f"↓{humanize_bytes(incoming_bytes)}"
+                    outgoing_traffic = f"↑{humanize_bytes(outgoing_bytes)}"
+                    traffic_data = await update_traffic(username, incoming_bytes, outgoing_bytes)
+                    total_bytes = traffic_data.get('total_incoming', 0) + traffic_data.get('total_outgoing', 0)
+                    formatted_total = humanize_bytes(total_bytes)
+                except ValueError:
+                    logger.error(f"Некорректный формат даты для пользователя {username}: {last_handshake_str}")
+
+        allowed_ips = client_info[2]
+        ipv4_match = re.search(r'(\d{1,3}\.){3}\d{1,3}/\d+', allowed_ips)
+        ipv4_address = ipv4_match.group(0) if ipv4_match else "—"
+
+        if expiration_time:
+            now = datetime.now(pytz.UTC)
+            try:
+                expiration_dt = expiration_time
+                if expiration_dt.tzinfo is None:
+                    expiration_dt = expiration_dt.replace(tzinfo=pytz.UTC)
+                remaining = expiration_dt - now
+                if remaining.total_seconds() > 0:
+                    days, seconds = remaining.days, remaining.seconds
+                    hours = seconds // 3600
+                    minutes = (seconds % 3600) // 60
+                    date_end = f"📅 {days}д {hours}ч {minutes}м"
+                else:
+                    date_end = "📅 ♾️ Неограниченно"
+            except Exception as e:
+                logger.error(f"Ошибка при обработке даты окончания: {e}")
+                date_end = "📅 ♾️ Неограниченно"
+        else:
+            date_end = "📅 ♾️ Неограниченно"
+
+        traffic_limit_display = "♾️ Неограниченно" if traffic_limit == "Неограниченно" else traffic_limit
+
+        text = (
+            f"📧 _Имя:_ {username}\n"
+            f"🌐 _IPv4:_ {ipv4_address}\n"
+            f"🌐 _Статус соединения:_ {status}\n"
+            f"{date_end}\n"
+            f"🔼 _Исходящий трафик:_ {incoming_traffic}\n"
+            f"🔽 _Входящий трафик:_ {outgoing_traffic}\n"
+            f"📊 _Всего:_ ↑↓{formatted_total} из **{traffic_limit_display}**\n"
+        )
+
+    if client_info:
+        keyboard = InlineKeyboardMarkup(row_width=2)
+        keyboard.add(
+            InlineKeyboardButton("IP info", callback_data=f"ip_info_{username}"),
+            InlineKeyboardButton("Подключения", callback_data=f"connections_{username}"),
+            InlineKeyboardButton("Получить конфигурацию", callback_data=f"send_config_{username}")
+        )
+        keyboard.add(
+            InlineKeyboardButton("Удалить", callback_data=f"delete_user_{username}")
+        )
+        keyboard.add(
+            InlineKeyboardButton("Назад", callback_data="list_users"),
+            InlineKeyboardButton("Домой", callback_data="home")
+        )
+        
+        try:
+            await bot.edit_message_text(
+                chat_id=callback_query.message.chat.id,
+                message_id=callback_query.message.message_id,
+                text=text,
+                parse_mode="Markdown",
+                reply_markup=keyboard
+            )
+        except aiogram_exceptions.MessageNotModified:
+            pass
     await callback_query.answer()
 
 @dp.callback_query_handler(lambda c: c.data.startswith('create_backup'))

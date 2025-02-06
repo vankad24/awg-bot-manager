@@ -110,20 +110,36 @@ check_updates() {
     if [[ "$changes" == "Already up to date." ]]; then
         echo -e "${GREEN}Обновления не требуются${NC}\n"
     elif [[ -n "$changes" ]]; then
-        echo -e "${GREEN}Обновления установлены:${NC}"
+        echo -e "${YELLOW}Обнаружены обновления:${NC}"
         echo "$changes"
         echo
-        read -p "Требуется перезапустить службу для применения обновлений. Перезапустить? (y/n): " restart
-        if [[ "$restart" =~ ^[Yy]$ ]]; then
-            run_with_spinner "Перезапуск службы" "sudo systemctl restart $SERVICE_NAME -qq"
-            echo -e "${GREEN}Служба перезапущена${NC}\n"
-        else
-            echo -e "${YELLOW}Для применения обновлений требуется перезапустить службу${NC}\n"
-        fi
+        echo -e "${GREEN}1${NC}. Установить обновления"
+        echo -e "${YELLOW}2${NC}. Отменить"
+        
+        echo -ne "\n${BLUE}Выберите действие:${NC} "
+        read action
+        
+        case $action in
+            1)
+                echo -e "\n${GREEN}Установка обновлений...${NC}"
+                git pull
+                run_with_spinner "Перезапуск службы" "sudo systemctl restart $SERVICE_NAME -qq"
+                echo -e "${GREEN}Обновления установлены и применены${NC}\n"
+                ;;
+            2)
+                echo -e "${YELLOW}Установка обновлений отменена${NC}\n"
+                return 0
+                ;;
+            *)
+                echo -e "${RED}Некорректный ввод${NC}\n"
+                return 1
+                ;;
+        esac
     else
         echo -e "${RED}Неожиданный ответ при проверке обновлений${NC}\n"
     fi
 }
+
 
 service_control_menu() {
     while true; do

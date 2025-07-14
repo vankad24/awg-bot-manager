@@ -764,6 +764,7 @@ async def client_selected_callback(callback_query: types.CallbackQuery):
 
     traffic_limit_display = "♾️ Неограниченно" if traffic_limit == "Неограниченно" else traffic_limit
 
+    username = username.replace('_', ' ')
     text = (
         f"📧 _Имя:_ {username}\n"
         f"🌐 _IPv4:_ {ipv4_address}\n"

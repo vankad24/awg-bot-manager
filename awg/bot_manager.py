@@ -218,7 +218,7 @@ def parse_relative_time(relative_str: str) -> datetime:
 @dp.message_handler(commands=['start', 'help'])
 async def help_command_handler(message: types.Message):
     if message.chat.id == admin:
-        sent_message = await message.answer("Выберите действие:", reply_markup=main_menu_markup)
+        sent_message = await message.answer(f"Выберите действие\nТекущий сервер: *{current_server}*", reply_markup=main_menu_markup, parse_mode='MarkDown')
         user_main_messages[admin] = {'chat_id': sent_message.chat.id, 'message_id': sent_message.message_id}
         try:
             await bot.pin_chat_message(chat_id=message.chat.id, message_id=sent_message.message_id, disable_notification=True)
@@ -492,10 +492,11 @@ async def prompt_for_user_name(callback_query: types.CallbackQuery):
         await bot.edit_message_text(
             chat_id=main_chat_id,
             message_id=main_message_id,
-            text="Введите имя пользователя для добавления:",
+            text=f"Введите имя пользователя для добавления\nТекущий сервер: *{current_server}*",
             reply_markup=InlineKeyboardMarkup().add(
                 InlineKeyboardButton("Домой", callback_data="home")
-            )
+                                                   ),
+            parse_mode='MarkDown'
         )
         user_main_messages[admin]['state'] = 'waiting_for_user_name'
     else:
@@ -657,8 +658,9 @@ async def set_traffic_limit(callback_query: types.CallbackQuery):
         await bot.edit_message_text(
             chat_id=main_chat_id,
             message_id=main_message_id,
-            text="Выберите действие:",
-            reply_markup=main_menu_markup
+            text=f"Выберите действие\nТекущий сервер: *{current_server}*",
+            reply_markup=main_menu_markup,
+            parse_mode='MarkDown'
         )
     else:
         await callback_query.answer("Выберите действие:", show_alert=True)
@@ -876,16 +878,18 @@ async def list_users_callback(callback_query: types.CallbackQuery):
             await bot.edit_message_text(
                 chat_id=main_chat_id,
                 message_id=main_message_id,
-                text="Выберите пользователя:",
-                reply_markup=keyboard
+                text=f"Выберите пользователя\nТекущий сервер: *{current_server}*",
+                reply_markup=keyboard,
+                parse_mode='MarkDown'
             )
         except Exception as e:
             logger.error(f"Ошибка при редактировании сообщения: {e}")
             await callback_query.answer("Ошибка при обновлении сообщения.", show_alert=True)
     else:
         sent_message = await callback_query.message.reply(
-            "Выберите пользователя:",
-            reply_markup=keyboard
+            f"Выберите пользователя\nТекущий сервер: *{current_server}*",
+            reply_markup=keyboard,
+            parse_mode='MarkDown'
         )
         user_main_messages[admin] = {
             'chat_id': sent_message.chat.id,
@@ -1292,18 +1296,19 @@ async def return_home(callback_query: types.CallbackQuery):
             await bot.edit_message_text(
                 chat_id=main_chat_id,
                 message_id=main_message_id,
-                text="Выберите действие:",
-                reply_markup=main_menu_markup
+                text=f"Выберите действие\nТекущий сервер: *{current_server}*",
+                reply_markup=main_menu_markup,
+                parse_mode='MarkDown'
             )
         except:
-            sent_message = await callback_query.message.reply("Выберите действие:", reply_markup=main_menu_markup)
+            sent_message = await callback_query.message.reply(f"Выберите действие\nТекущий сервер: *{current_server}*", reply_markup=main_menu_markup)
             user_main_messages[admin] = {'chat_id': sent_message.chat.id, 'message_id': sent_message.message_id}
             try:
                 await bot.pin_chat_message(chat_id=sent_message.chat.id, message_id=sent_message.message_id, disable_notification=True)
             except:
                 pass
     else:
-        sent_message = await callback_query.message.reply("Выберите действие:", reply_markup=main_menu_markup)
+        sent_message = await callback_query.message.reply(f"Выберите действие\nТекущий сервер: *{current_server}*", reply_markup=main_menu_markup)
         user_main_messages[admin] = {'chat_id': sent_message.chat.id, 'message_id': sent_message.message_id}
         try:
             await bot.pin_chat_message(chat_id=sent_message.chat.id, message_id=sent_message.message_id, disable_notification=True)

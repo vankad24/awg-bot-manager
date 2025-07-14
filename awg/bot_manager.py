@@ -782,7 +782,7 @@ async def client_selected_callback(callback_query: types.CallbackQuery):
         InlineKeyboardButton("Получить конфигурацию", callback_data=f"send_config_{username}")
     )
     keyboard.add(
-        InlineKeyboardButton("Удалить", callback_data=f"delete_user_{username}")
+        InlineKeyboardButton("Удалить", callback_data=f"confirm_delete_user_{username}")
     )
     keyboard.add(
         InlineKeyboardButton("Назад", callback_data="list_users"),
@@ -1035,6 +1035,28 @@ async def ip_info_callback(callback_query: types.CallbackQuery):
     else:
         await callback_query.answer("Ошибка: главное сообщение не найдено.", show_alert=True)
         return
+    await callback_query.answer()
+
+@dp.callback_query_handler(lambda c: c.data.startswith('confirm_delete_user_'))
+async def confirm_delete_user_callback(callback_query: types.CallbackQuery):
+    if callback_query.from_user.id != admin:
+        await callback_query.answer("У вас нет прав для выполнения этого действия.", show_alert=True)
+        return
+    
+    username = callback_query.data.split('confirm_delete_user_')[1]
+    keyboard = InlineKeyboardMarkup(row_width=2)
+    keyboard.add(
+        InlineKeyboardButton("✅ Да, удалить", callback_data=f"delete_user_{username}"),
+        InlineKeyboardButton("❌ Отмена", callback_data=f"list_users")
+    )
+    
+    await bot.edit_message_text(
+        chat_id=callback_query.message.chat.id,
+        message_id=callback_query.message.message_id,
+        text=f"⚠️ Вы уверены, что хотите удалить пользователя *{username}*?\n\nЭто действие нельзя отменить!",
+        parse_mode="Markdown",
+        reply_markup=keyboard
+    )
     await callback_query.answer()
 
 @dp.callback_query_handler(lambda c: c.data.startswith('delete_user_'))
@@ -1447,7 +1469,7 @@ async def send_user_config(callback_query: types.CallbackQuery):
             InlineKeyboardButton("Получить конфигурацию", callback_data=f"send_config_{username}")
         )
         keyboard.add(
-            InlineKeyboardButton("Удалить", callback_data=f"delete_user_{username}")
+            InlineKeyboardButton("Удалить", callback_data=f"confirm_delete_user_{username}")
         )
         keyboard.add(
             InlineKeyboardButton("Назад", callback_data="list_users"),

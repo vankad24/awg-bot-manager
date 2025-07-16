@@ -24,6 +24,9 @@ from datetime import datetime, timedelta
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.date import DateTrigger
 from apscheduler.triggers.interval import IntervalTrigger
+from zoneinfo import ZoneInfo
+
+CURRENT_TIMEZONE = ZoneInfo('Europe/Moscow')
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -82,10 +85,10 @@ scheduler.start()
 dp.middleware.setup(AdminMessageDeletionMiddleware())
 
 main_menu_markup = InlineKeyboardMarkup(row_width=1).add(
-    InlineKeyboardButton("Добавить пользователя", callback_data="add_user"),
-    InlineKeyboardButton("Список клиентов", callback_data="list_users"),
-    InlineKeyboardButton("Создать бекап", callback_data="create_backup"),
-    InlineKeyboardButton("Управление серверами", callback_data="manage_servers")
+    InlineKeyboardButton("➕ Добавить пользователя", callback_data="add_user"),
+    InlineKeyboardButton("📋 Список клиентов", callback_data="list_users"),
+    InlineKeyboardButton("🔑 Создать бекап", callback_data="create_backup"),
+    InlineKeyboardButton("⚙ Управление серверами", callback_data="manage_servers")
 )
 
 current_server = None
@@ -386,7 +389,7 @@ async def handle_messages(message: types.Message):
                     message_id=main_message_id,
                     text="Ошибка при добавлении сервера.",
                     reply_markup=InlineKeyboardMarkup().add(
-                        InlineKeyboardButton("Назад", callback_data="manage_servers")
+                        InlineKeyboardButton("⬅️ Назад", callback_data="manage_servers")
                     )
                 )
         
@@ -438,7 +441,7 @@ async def handle_messages(message: types.Message):
                     message_id=main_message_id,
                     text="Ошибка при добавлении сервера.",
                     reply_markup=InlineKeyboardMarkup().add(
-                        InlineKeyboardButton("Назад", callback_data="manage_servers")
+                        InlineKeyboardButton("⬅️ Назад", callback_data="manage_servers")
                     )
                 )
         
@@ -710,7 +713,7 @@ async def client_selected_callback(callback_query: types.CallbackQuery):
                 last_handshake_dt = parse_relative_time(last_handshake_str)
                 if last_handshake_dt:
                     delta = datetime.now(pytz.UTC) - last_handshake_dt
-                    if delta <= timedelta(minutes=1):
+                    if delta <= timedelta(minutes=3):
                         status = "🟢 Online"
                     else:
                         status = "🔴 Offline"
@@ -766,28 +769,35 @@ async def client_selected_callback(callback_query: types.CallbackQuery):
 
     traffic_limit_display = "♾️ Неограниченно" if traffic_limit == "Неограниченно" else traffic_limit
 
+    if last_handshake_str and last_handshake_str.lower() not in ['never', 'нет данных', '-']:
+        show_last_handshake = f"{last_handshake_dt.astimezone(CURRENT_TIMEZONE).strftime('%d/%m/%Y %H:%M:%S')}"
+    else:
+        show_last_handshake = "❗Нет данных❗"
+
     username = username.replace('_', ' ')
     text = (
         f"📧 _Имя:_ {username}\n"
-        f"🌐 _IPv4:_ {ipv4_address}\n"
+        f"🌐 _Внутренний IPv4:_ {ipv4_address}\n"
         f"🌐 _Статус соединения:_ {status}\n"
+        f"⏳ _Последнее 🤝:_ {show_last_handshake}\n"
         f"{date_end}\n"
         f"🔼 _Исходящий трафик:_ {incoming_traffic}\n"
         f"🔽 _Входящий трафик:_ {outgoing_traffic}\n"
-        f"📊 _Всего:_ ↑↓{formatted_total} из **{traffic_limit_display}**\n"
+        f"📊 _Всего:_ ↑↓{formatted_total}\n"
+        f"             из **{traffic_limit_display}**\n"
     )
 
     keyboard = InlineKeyboardMarkup(row_width=2)
     keyboard.add(
-        InlineKeyboardButton("IP info", callback_data=f"ip_info_{username}"),
+        InlineKeyboardButton("🔎 IP info", callback_data=f"ip_info_{username}"),
         InlineKeyboardButton("Подключения", callback_data=f"connections_{username}"),
-        InlineKeyboardButton("Получить конфигурацию", callback_data=f"send_config_{username}")
+        InlineKeyboardButton("🔐 Получить конфигурацию", callback_data=f"send_config_{username}")
     )
     keyboard.add(
         InlineKeyboardButton("Удалить", callback_data=f"confirm_delete_user_{username}")
     )
     keyboard.add(
-        InlineKeyboardButton("Назад", callback_data="list_users"),
+        InlineKeyboardButton("⬅️ Назад", callback_data="list_users"),
         InlineKeyboardButton("Домой", callback_data="home")
     )
 
@@ -852,16 +862,16 @@ async def list_users_callback(callback_query: types.CallbackQuery):
                     delta = now - last_handshake_dt
                     delta_days = delta.days
                     if delta_days <= 5:
-                        status_display = f"🟢({delta_days}d) {username}"
+                        status_display = f"💻({delta_days}d) {username}"
                     else:
                         status_display = f"❌({delta_days}d) {username}"
                 else:
-                    status_display = f"❌(?d) {username}"
+                    status_display = f"🚫(?d) {username}"
             except ValueError:
                 logger.error(f"Некорректный формат даты для пользователя {username}: {last_handshake_str}")
-                status_display = f"❌(?d) {username}"
+                status_display = f"🚫(?d) {username}"
         else:
-            status_display = f"❌(?d) {username}"
+            status_display = f"🚫(?d) {username}"
 
         keyboard.insert(InlineKeyboardButton(
             status_display,
@@ -968,7 +978,7 @@ async def client_connections_callback(callback_query: types.CallbackQuery):
                 
         keyboard = InlineKeyboardMarkup(row_width=2)
         keyboard.add(
-            InlineKeyboardButton("Назад", callback_data=f"client_{username}"),
+            InlineKeyboardButton("⬅️ Назад", callback_data=f"client_{username}"),
             InlineKeyboardButton("Домой", callback_data="home"))
 
         await callback_query.message.edit_text(text, reply_markup=keyboard)
@@ -1018,7 +1028,7 @@ async def ip_info_callback(callback_query: types.CallbackQuery):
         info_text += f"{key.capitalize()}: {value}\n"
     keyboard = InlineKeyboardMarkup(row_width=2)
     keyboard.add(
-        InlineKeyboardButton("Назад", callback_data=f"client_{username}"),
+        InlineKeyboardButton("⬅️ Назад", callback_data=f"client_{username}"),
         InlineKeyboardButton("Домой", callback_data="home")
     )
     main_chat_id = user_main_messages.get(admin, {}).get('chat_id')
@@ -1415,7 +1425,7 @@ async def send_user_config(callback_query: types.CallbackQuery):
                     last_handshake_dt = parse_relative_time(last_handshake_str)
                     if last_handshake_dt:
                         delta = datetime.now(pytz.UTC) - last_handshake_dt
-                        if delta <= timedelta(minutes=1):
+                        if delta <= timedelta(minutes=3):
                             status = "🟢 Online"
                         else:
                             status = "🔴 Offline"
@@ -1456,28 +1466,35 @@ async def send_user_config(callback_query: types.CallbackQuery):
 
         traffic_limit_display = "♾️ Неограниченно" if traffic_limit == "Неограниченно" else traffic_limit
 
+        if last_handshake_str and last_handshake_str.lower() not in ['never', 'нет данных', '-']:
+            show_last_handshake = f"{last_handshake_dt.astimezone(CURRENT_TIMEZONE).strftime('%d/%m/%Y %H:%M:%S')}"
+        else:
+            show_last_handshake = "❗Нет данных❗"
+
         text = (
             f"📧 _Имя:_ {username}\n"
-            f"🌐 _IPv4:_ {ipv4_address}\n"
+            f"🌐 _Внутренний IPv4:_ {ipv4_address}\n"
             f"🌐 _Статус соединения:_ {status}\n"
+            f"🔼 _Исходящий трафик:_ {incoming_traffic}\n"
             f"{date_end}\n"
             f"🔼 _Исходящий трафик:_ {incoming_traffic}\n"
             f"🔽 _Входящий трафик:_ {outgoing_traffic}\n"
-            f"📊 _Всего:_ ↑↓{formatted_total} из **{traffic_limit_display}**\n"
+            f"📊 _Всего:_ ↑↓{formatted_total}\n"
+            f"             из **{traffic_limit_display}**\n"
         )
 
     if client_info:
         keyboard = InlineKeyboardMarkup(row_width=2)
         keyboard.add(
-            InlineKeyboardButton("IP info", callback_data=f"ip_info_{username}"),
+            InlineKeyboardButton("🔎 IP info", callback_data=f"ip_info_{username}"),
             InlineKeyboardButton("Подключения", callback_data=f"connections_{username}"),
-            InlineKeyboardButton("Получить конфигурацию", callback_data=f"send_config_{username}")
+            InlineKeyboardButton("🔐 Получить конфигурацию", callback_data=f"send_config_{username}")
         )
         keyboard.add(
             InlineKeyboardButton("Удалить", callback_data=f"confirm_delete_user_{username}")
         )
         keyboard.add(
-            InlineKeyboardButton("Назад", callback_data="list_users"),
+            InlineKeyboardButton("⬅️ Назад", callback_data="list_users"),
             InlineKeyboardButton("Домой", callback_data="home")
         )
         

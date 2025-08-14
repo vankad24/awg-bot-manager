@@ -51,6 +51,15 @@ WG_CONFIG_FILE = None
 DOCKER_CONTAINER = None
 ENDPOINT = None
 
+def escape_markdown_v2(text: str) -> str:
+    """
+    Экранирует все спецсимволы для Telegram MarkDownV2.
+    Список из оф. доки Telegram Bot API:
+    _ * [ ] ( ) ~ ` > # + - = | { } . !
+    """
+    escape_chars = r"_*[]()~`>#+-=|{}.!"
+    return "".join("\\" + c if c in escape_chars else c for c in text)
+
 def update_server_settings(server_id=None):
     global current_server, WG_CONFIG_FILE, DOCKER_CONTAINER, ENDPOINT
     if server_id:
@@ -471,7 +480,7 @@ async def handle_messages(message: types.Message):
                 chat_id=main_chat_id,
                 message_id=main_message_id,
                 text=f"Выберите время действия конфигурации для пользователя **{user_name}**:",
-                parse_mode="Markdown",
+                parse_mode="MarkDown",
                 reply_markup=duration_markup
             )
         else:
@@ -539,7 +548,7 @@ async def set_config_duration(callback: types.CallbackQuery):
         chat_id=callback.message.chat.id,
         message_id=callback.message.message_id,
         text=f"Выберите лимит трафика для пользователя **{client_name}**:",
-        parse_mode="Markdown",
+        parse_mode="MarkDown",
         reply_markup=traffic_markup
     )
     await callback.answer()
@@ -622,27 +631,27 @@ async def set_traffic_limit(callback_query: types.CallbackQuery):
                         admin,
                         config,
                         caption=caption,
-                        parse_mode="Markdown",
+                        parse_mode="MarDdown",
                         disable_notification=True
                     )
                     asyncio.create_task(delete_message_after_delay(admin, sent_doc.message_id, delay=15))
         except FileNotFoundError:
             confirmation_text = "Не удалось найти файлы конфигурации для указанного пользователя."
-            sent_message = await bot.send_message(admin, confirmation_text, parse_mode="Markdown", disable_notification=True)
+            sent_message = await bot.send_message(admin, confirmation_text, parse_mode="MarkDown", disable_notification=True)
             asyncio.create_task(delete_message_after_delay(admin, sent_message.message_id, delay=15))
             await callback_query.answer()
             return
         except Exception as e:
             logger.error(f"Ошибка при отправке конфигурации: {e}")
             confirmation_text = "Произошла ошибка."
-            sent_message = await bot.send_message(admin, confirmation_text, parse_mode="Markdown", disable_notification=True)
+            sent_message = await bot.send_message(admin, confirmation_text, parse_mode="MarkDown", disable_notification=True)
             asyncio.create_task(delete_message_after_delay(admin, sent_message.message_id, delay=15))
             await callback_query.answer()
             return
         sent_confirmation = await bot.send_message(
             chat_id=admin,
             text=confirmation_text,
-            parse_mode="Markdown",
+            parse_mode="MarkDown",
             disable_notification=True
         )
         asyncio.create_task(delete_message_after_delay(admin, sent_confirmation.message_id, delay=15))
@@ -651,7 +660,7 @@ async def set_traffic_limit(callback_query: types.CallbackQuery):
         sent_confirmation = await bot.send_message(
             chat_id=admin,
             text=confirmation_text,
-            parse_mode="Markdown",
+            parse_mode="MarkDown",
             disable_notification=True
         )
         asyncio.create_task(delete_message_after_delay(admin, sent_confirmation.message_id, delay=15))
@@ -774,9 +783,9 @@ async def client_selected_callback(callback_query: types.CallbackQuery):
     else:
         show_last_handshake = "❗Нет данных❗"
 
-    username = username.replace('_', ' ')
+    
     text = (
-        f"📧 _Имя:_ {username}\n"
+        f"📧 _Имя:_ {escape_markdown_v2(username)}\n"
         f"🌐 _Внутренний IPv4:_ {ipv4_address}\n"
         f"🌐 _Статус соединения:_ {status}\n"
         f"⏳ _Последнее 🤝:_ {show_last_handshake}\n"
@@ -810,7 +819,7 @@ async def client_selected_callback(callback_query: types.CallbackQuery):
                 chat_id=main_chat_id,
                 message_id=main_message_id,
                 text=text,
-                parse_mode="Markdown",
+                parse_mode="MarkDown",
                 reply_markup=keyboard
             )
         except Exception as e:
@@ -1039,7 +1048,7 @@ async def ip_info_callback(callback_query: types.CallbackQuery):
                 chat_id=main_chat_id,
                 message_id=main_message_id,
                 text=info_text,
-                parse_mode="Markdown",
+                parse_mode="MarkDown",
                 reply_markup=keyboard
             )
         except Exception as e:
@@ -1068,7 +1077,7 @@ async def confirm_delete_user_callback(callback_query: types.CallbackQuery):
         chat_id=callback_query.message.chat.id,
         message_id=callback_query.message.message_id,
         text=f"⚠️ Вы уверены, что хотите удалить пользователя *{username}*?\n\nЭто действие нельзя отменить!",
-        parse_mode="Markdown",
+        parse_mode="MarkDown",
         reply_markup=keyboard
     )
     await callback_query.answer()
@@ -1114,7 +1123,7 @@ async def client_delete_callback(callback_query: types.CallbackQuery):
             chat_id=main_chat_id,
             message_id=main_message_id,
             text=confirmation_text,
-            parse_mode="Markdown",
+            parse_mode="MarkDown",
             reply_markup=main_menu_markup
         )
     else:
@@ -1218,7 +1227,7 @@ async def delete_server_callback(callback_query: types.CallbackQuery):
         chat_id=callback_query.message.chat.id,
         message_id=callback_query.message.message_id,
         text="Выберите сервер для удаления.\n\n*ВНИМАНИЕ*: При удалении сервера будут удалены все его пользователи и конфигурации!",
-        parse_mode="Markdown",
+        parse_mode="MarkDown",
         reply_markup=keyboard
     )
     await callback_query.answer()
@@ -1240,7 +1249,7 @@ async def confirm_delete_server_callback(callback_query: types.CallbackQuery):
         chat_id=callback_query.message.chat.id,
         message_id=callback_query.message.message_id,
         text=f"⚠️ Вы уверены, что хотите удалить сервер *{server_id}*?\n\nЭто действие нельзя отменить!",
-        parse_mode="Markdown",
+        parse_mode="MarkDown",
         reply_markup=keyboard
     )
     await callback_query.answer()
@@ -1361,25 +1370,25 @@ async def send_user_config(callback_query: types.CallbackQuery):
                     admin,
                     config,
                     caption=caption,
-                    parse_mode="Markdown",
+                    parse_mode="MarkDown",
                     disable_notification=True
                 )
                 sent_messages.append(sent_doc.message_id)
         else:
             confirmation_text = f"Не удалось создать конфигурацию для пользователя **{username}**."
-            sent_message = await bot.send_message(admin, confirmation_text, parse_mode="Markdown", disable_notification=True)
+            sent_message = await bot.send_message(admin, confirmation_text, parse_mode="MarkDown", disable_notification=True)
             asyncio.create_task(delete_message_after_delay(admin, sent_message.message_id, delay=15))
             await callback_query.answer()
             return
     except Exception as e:
         confirmation_text = f"Произошла ошибка: {e}"
-        sent_message = await bot.send_message(admin, confirmation_text, parse_mode="Markdown", disable_notification=True)
+        sent_message = await bot.send_message(admin, confirmation_text, parse_mode="MarkDown", disable_notification=True)
         asyncio.create_task(delete_message_after_delay(admin, sent_message.message_id, delay=15))
         await callback_query.answer()
         return
     if not sent_messages:
         confirmation_text = f"Не удалось найти файлы конфигурации для пользователя **{username}**."
-        sent_message = await bot.send_message(admin, confirmation_text, parse_mode="Markdown", disable_notification=True)
+        sent_message = await bot.send_message(admin, confirmation_text, parse_mode="MarkDown", disable_notification=True)
         asyncio.create_task(delete_message_after_delay(admin, sent_message.message_id, delay=15))
         await callback_query.answer()
         return
@@ -1388,7 +1397,7 @@ async def send_user_config(callback_query: types.CallbackQuery):
         sent_confirmation = await bot.send_message(
             chat_id=admin,
             text=confirmation_text,
-            parse_mode="Markdown",
+            parse_mode="MarkDown",
             disable_notification=True
         )
         asyncio.create_task(delete_message_after_delay(admin, sent_confirmation.message_id, delay=15))
@@ -1472,7 +1481,7 @@ async def send_user_config(callback_query: types.CallbackQuery):
             show_last_handshake = "❗Нет данных❗"
 
         text = (
-            f"📧 _Имя:_ {username}\n"
+            f"📧 _Имя:_ {escape_markdown_v2(username)}\n"
             f"🌐 _Внутренний IPv4:_ {ipv4_address}\n"
             f"🌐 _Статус соединения:_ {status}\n"
             f"🔼 _Исходящий трафик:_ {incoming_traffic}\n"
@@ -1503,7 +1512,7 @@ async def send_user_config(callback_query: types.CallbackQuery):
                 chat_id=callback_query.message.chat.id,
                 message_id=callback_query.message.message_id,
                 text=text,
-                parse_mode="Markdown",
+                parse_mode="MarkDown",
                 reply_markup=keyboard
             )
         except aiogram_exceptions.MessageNotModified:
@@ -1704,10 +1713,10 @@ async def deactivate_user(client_name: str):
         except Exception as e:
             logger.error(f"Ошибка при удалении файла подключений для пользователя {client_name}: {e}")
         confirmation_text = f"Конфигурация пользователя **{client_name}** была деактивирована из-за превышения лимита трафика."
-        sent_message = await bot.send_message(admin, confirmation_text, parse_mode="Markdown", disable_notification=True)
+        sent_message = await bot.send_message(admin, confirmation_text, parse_mode="MarkDown", disable_notification=True)
         asyncio.create_task(delete_message_after_delay(admin, sent_message.message_id, delay=15))
     else:
-        sent_message = await bot.send_message(admin, f"Не удалось деактивировать пользователя **{client_name}**.", parse_mode="Markdown", disable_notification=True)
+        sent_message = await bot.send_message(admin, f"Не удалось деактивировать пользователя **{client_name}**.", parse_mode="MarkDown", disable_notification=True)
         asyncio.create_task(delete_message_after_delay(admin, sent_message.message_id, delay=15))
 
 async def check_environment():

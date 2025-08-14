@@ -51,6 +51,15 @@ WG_CONFIG_FILE = None
 DOCKER_CONTAINER = None
 ENDPOINT = None
 
+def escape_markdown_v2(text: str) -> str:
+    """
+    Экранирует все спецсимволы для Telegram MarkdownV2.
+    Список из оф. доки Telegram Bot API:
+    _ * [ ] ( ) ~ ` > # + - = | { } . !
+    """
+    escape_chars = r"_*[]()~`>#+-=|{}.!"
+    return "".join("\\" + c if c in escape_chars else c for c in text)
+
 def update_server_settings(server_id=None):
     global current_server, WG_CONFIG_FILE, DOCKER_CONTAINER, ENDPOINT
     if server_id:
@@ -774,9 +783,9 @@ async def client_selected_callback(callback_query: types.CallbackQuery):
     else:
         show_last_handshake = "❗Нет данных❗"
 
-    username = username.replace('_', ' ')
+    
     text = (
-        f"📧 _Имя:_ {username}\n"
+        f"📧 _Имя:_ {escape_markdown_v2(username)}\n"
         f"🌐 _Внутренний IPv4:_ {ipv4_address}\n"
         f"🌐 _Статус соединения:_ {status}\n"
         f"⏳ _Последнее 🤝:_ {show_last_handshake}\n"

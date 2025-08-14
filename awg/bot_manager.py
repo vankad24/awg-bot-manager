@@ -1032,7 +1032,7 @@ async def ip_info_callback(callback_query: types.CallbackQuery):
         logger.error(f"Ошибка при запросе к API: {e}")
         await callback_query.answer("Ошибка при запросе к API.", show_alert=True)
         return
-    info_text = f"*IP информация для {username}:*\n"
+    info_text = f"*IP информация для {escape_markdown_v2(username)}:*\n"
     for key, value in data.items():
         info_text += f"{key.capitalize()}: {value}\n"
     keyboard = InlineKeyboardMarkup(row_width=2)
@@ -1076,7 +1076,7 @@ async def confirm_delete_user_callback(callback_query: types.CallbackQuery):
     await bot.edit_message_text(
         chat_id=callback_query.message.chat.id,
         message_id=callback_query.message.message_id,
-        text=f"⚠️ Вы уверены, что хотите удалить пользователя *{username}*?\n\nЭто действие нельзя отменить!",
+        text=f"⚠️ Вы уверены, что хотите удалить пользователя *{escape_markdown_v2(username)}*?\n\nЭто действие нельзя отменить!",
         parse_mode="Markdown",
         reply_markup=keyboard
     )
@@ -1113,9 +1113,9 @@ async def client_delete_callback(callback_query: types.CallbackQuery):
                 os.remove(connections_file)
         except Exception as e:
             logger.error(f"Ошибка при удалении файла подключений для пользователя {username}: {e}")
-        confirmation_text = f"Пользователь **{username}** успешно удален."
+        confirmation_text = f"Пользователь **{escape_markdown_v2(username)}** успешно удален."
     else:
-        confirmation_text = f"Не удалось удалить пользователя **{username}**."
+        confirmation_text = f"Не удалось удалить пользователя **{escape_markdown_v2(username)}**."
     main_chat_id = user_main_messages.get(admin, {}).get('chat_id')
     main_message_id = user_main_messages.get(admin, {}).get('message_id')
     if main_chat_id and main_message_id:
@@ -1375,7 +1375,7 @@ async def send_user_config(callback_query: types.CallbackQuery):
                 )
                 sent_messages.append(sent_doc.message_id)
         else:
-            confirmation_text = f"Не удалось создать конфигурацию для пользователя **{username}**."
+            confirmation_text = f"Не удалось создать конфигурацию для пользователя **{escape_markdown_v2(username)}**."
             sent_message = await bot.send_message(admin, confirmation_text, parse_mode="Markdown", disable_notification=True)
             asyncio.create_task(delete_message_after_delay(admin, sent_message.message_id, delay=15))
             await callback_query.answer()
@@ -1387,13 +1387,13 @@ async def send_user_config(callback_query: types.CallbackQuery):
         await callback_query.answer()
         return
     if not sent_messages:
-        confirmation_text = f"Не удалось найти файлы конфигурации для пользователя **{username}**."
+        confirmation_text = f"Не удалось найти файлы конфигурации для пользователя **{escape_markdown_v2(username)}**."
         sent_message = await bot.send_message(admin, confirmation_text, parse_mode="Markdown", disable_notification=True)
         asyncio.create_task(delete_message_after_delay(admin, sent_message.message_id, delay=15))
         await callback_query.answer()
         return
     else:
-        confirmation_text = f"Конфигурация для **{username}** отправлена."
+        confirmation_text = f"Конфигурация для **{escape_markdown_v2(username)}** отправлена."
         sent_confirmation = await bot.send_message(
             chat_id=admin,
             text=confirmation_text,
@@ -1481,7 +1481,7 @@ async def send_user_config(callback_query: types.CallbackQuery):
             show_last_handshake = "❗Нет данных❗"
 
         text = (
-            f"📧 _Имя:_ {username}\n"
+            f"📧 _Имя:_ {escape_markdown_v2(username)}\n"
             f"🌐 _Внутренний IPv4:_ {ipv4_address}\n"
             f"🌐 _Статус соединения:_ {status}\n"
             f"🔼 _Исходящий трафик:_ {incoming_traffic}\n"
@@ -1618,7 +1618,7 @@ async def read_traffic(username, server_id='default'):
                 traffic_data = json.loads(content)
                 return traffic_data
             except json.JSONDecodeError:
-                logger.error(f"Ошибка при чтении traffic.json для пользователя {username}. Инициализация заново.")
+                logger.error(f"Ошибка при чтении traffic.json для пользователя {escape_markdown_v2(username)}. Инициализация заново.")
                 traffic_data = {
                     "total_incoming": 0,
                     "total_outgoing": 0,
@@ -1658,7 +1658,7 @@ async def update_all_clients_traffic():
         transfer = client.get('transfer', '0/0')
         incoming_bytes, outgoing_bytes = parse_transfer(transfer)
         traffic_data = await update_traffic(username, incoming_bytes, outgoing_bytes, current_server)
-        logger.info(f"Обновлён трафик для пользователя {username}: Входящий {traffic_data['total_incoming']} B, Исходящий {traffic_data['total_outgoing']} B")
+        logger.info(f"Обновлён трафик для пользователя {escape_markdown_v2(username)}: Входящий {traffic_data['total_incoming']} B, Исходящий {traffic_data['total_outgoing']} B")
         traffic_limit = db.get_user_traffic_limit(username, server_id=current_server)
         if traffic_limit != "Неограниченно":
             limit_bytes = parse_traffic_limit(traffic_limit)

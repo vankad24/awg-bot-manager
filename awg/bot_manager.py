@@ -631,7 +631,7 @@ async def set_traffic_limit(callback_query: types.CallbackQuery):
                         admin,
                         config,
                         caption=caption,
-                        parse_mode="MarDdown",
+                        parse_mode="Markdown",
                         disable_notification=True
                     )
                     asyncio.create_task(delete_message_after_delay(admin, sent_doc.message_id, delay=15))
